@@ -139,6 +139,9 @@ final class AppSettings: ObservableObject {
     /// return prediction, specialised handlers). For telling whether a game hang comes from them.
     /// Applied when a game starts; no effect while JIT is in use.
     @AppStorage("interpreterCompat") var interpreterCompat = false { willSet { objectWillChange.send() } }
+    /// Loads texture packs from Azahar/load/textures/<title ID>/. Textures load asynchronously and are
+    /// never preloaded: preloading a large pack holds it all in memory at once.
+    @AppStorage("customTextures") var customTextures = true { willSet { objectWillChange.send() } }
     @AppStorage("hideControllerWithGamepad") var hideControllerWithGamepad = true { willSet { objectWillChange.send() } }
 
     // MARK: Multiplayer
@@ -195,6 +198,11 @@ final class AppSettings: ObservableObject {
         use_vsync = \(vsync)
         texture_filter = \(textureFilter)
         filter_mode = \(linearFiltering)
+
+        [Utility]
+        custom_textures = \(customTextures)
+        preload_textures = false
+        async_custom_loading = true
 
         [Layout]
         layout_option = \(landscapeLayout.coreValue)

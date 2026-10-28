@@ -18,6 +18,7 @@ Holofold 是 [Bifold](https://github.com/Bifold-Emu/Bifold)（Azahar 的 iOS 前
 - **曲面屏**：可选把上屏弯成环绕你的弧面（20°–90°）。
 - **下屏独立窗口**：像掌机下半部分一样倾斜摆放；注视 + 捏合 = 点击，捏合 + 拖动 = 滑动。
 - **手柄**：PS VR2 Sense、DualSense / DualShock 4、Xbox、Switch Pro 及其他 MFi 手柄；支持用手柄陀螺仪做体感操作。
+- **高清材质包**：支持 Azahar 格式的材质包（见[高清材质包](#高清材质包)）。
 - **自动存档**：退出游戏时自动保存即时存档，下次启动从这里继续。
 - **M5 上满速运行**：我们的测试中仅用解释器（无需 JIT）约 60 fps，内部分辨率最高 4×（每只眼 1600×960）。
 - **启动直接进游戏**：没有启动器界面。
@@ -116,6 +117,20 @@ visionOS 模拟器只适合检查界面和布局（需先运行 `./scripts/build
 2. 否则启动你的第一个游戏（按标题排序）；
 3. 如果没有你自己的游戏，启动内置的开源自制游戏 **StarCruiser7**，它同样使用立体上屏。所以新构建的应用总有东西可看。
 
+## 高清材质包
+
+Holofold 可以加载 Azahar 格式的自定义材质包（一个包含 `tex1_…png` 文件和 `pack.json` 的目录）。
+
+1. 找到材质包里的材质目录，一般是 `user/load/textures/<Title ID>/`。
+2. 如果材质包是为其他地区版本做的，把这个目录改名为你那份游戏的 Title ID（运行 `python3 scripts/tools/ciacheck.py your-game.cia` 可以看到）。改名后菜单文字这类区域专属材质可能对不上，会保持原样。
+3. 把它拷到头显的 `Documents/Azahar/load/textures/<Title ID>/`：
+   ```bash
+   ./scripts/push-game.sh --textures path/to/<Title ID>
+   ```
+4. 启动游戏。材质在后台加载，第一次进入某个区域时可能会短暂显示原版材质。
+
+尽量用材质包的 1080p（4×）版本，4K（8×）版本需要的内存多得多。只会用到材质本身，包里的 ReShade 预设等 PC 工具在这里不起作用。
+
 ## 游玩
 
 - **上屏（3D）** 填满游戏窗口。拉大窗口画面就会变大。
@@ -160,6 +175,7 @@ PS 键和 Xbox / Home 键被 visionOS 系统占用，应用收不到。
 | `-visionCurvedScreen YES/NO` | `YES` | 曲面上屏 |
 | `-visionCurveDegrees N` | `50` | 弯曲角度，20–90 |
 | `-motionControls YES/NO` | `YES` | 手柄陀螺仪 |
+| `-customTextures YES/NO` | `YES` | 加载高清材质包 |
 | `-interpreterCompat YES` | `NO` | 解释器兼容模式：关闭较新的解释器加速，用于排查卡死（会更慢） |
 | `-autoboot <Title ID 或文件名>` | — | 与 `HOLOFOLD_AUTOBOOT_TITLE_ID` 相同，只对本次运行生效 |
 

@@ -18,6 +18,7 @@ Holofold is a fork of [Bifold](https://github.com/Bifold-Emu/Bifold) (an iOS fro
 - **Curved screen**: optionally wraps the top screen around you (20°–90°).
 - **Bottom screen in its own window**: tilted like the lower half of the handheld; gaze + pinch to tap, pinch + drag to slide.
 - **Controllers**: PS VR2 Sense, DualSense / DualShock 4, Xbox, Switch Pro and other MFi controllers; controller gyro for motion controls.
+- **HD texture packs** in Azahar's format (see [HD texture packs](#hd-texture-packs)).
 - **Auto-save**: leaving the game saves a state, and the next launch resumes from it.
 - **Full speed on M5**: about 60 fps with the interpreter alone in our tests (no JIT needed), at up to 4× internal resolution (1600×960 per eye).
 - **Boots straight into the game**: no launcher UI.
@@ -116,6 +117,20 @@ Which game starts:
 2. otherwise your first game (by title);
 3. with no game of your own, the bundled open-source homebrew **StarCruiser7**, which also uses the stereoscopic top screen. A fresh build always has something to show.
 
+## HD texture packs
+
+Holofold loads custom texture packs in Azahar's format (a folder of `tex1_…png` files with a `pack.json`).
+
+1. Find the pack's texture folder, usually `user/load/textures/<title ID>/`.
+2. If the pack was made for another region, rename that folder to your copy's title ID (`python3 scripts/tools/ciacheck.py your-game.cia` prints it). Region-specific textures such as menu text may then not match and stay original.
+3. Copy it to the headset as `Documents/Azahar/load/textures/<title ID>/`:
+   ```bash
+   ./scripts/push-game.sh --textures path/to/<title ID>
+   ```
+4. Start the game. Textures load in the background, so the first visit to an area may briefly show the originals.
+
+Prefer a pack's 1080p (4×) version: 4K (8×) packs need much more memory. Only the textures are used; ReShade presets and other PC tools in a pack don't apply.
+
 ## Playing
 
 - **Top screen (3D)** fills the game window. Resize the window to make it bigger.
@@ -160,6 +175,7 @@ Launch arguments (Xcode › Edit Scheme › Run › Arguments, for example `-res
 | `-visionCurvedScreen YES/NO` | `YES` | Curved top screen |
 | `-visionCurveDegrees N` | `50` | Curve angle, 20–90 |
 | `-motionControls YES/NO` | `YES` | Controller gyro |
+| `-customTextures YES/NO` | `YES` | Load HD texture packs |
 | `-interpreterCompat YES` | `NO` | Interpreter compatibility mode: disables the newer interpreter speed-ups, for diagnosing freezes (slower) |
 | `-autoboot <title ID or file>` | — | Same as `HOLOFOLD_AUTOBOOT_TITLE_ID`, for one run |
 

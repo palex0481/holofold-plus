@@ -43,6 +43,11 @@ filter_mode = true
 render_3d = 0
 factor_3d = 0
 
+[Utility]
+custom_textures = false
+preload_textures = false
+async_custom_loading = true
+
 [Layout]
 layout_option = 0
 portrait_layout_option = 0
@@ -152,6 +157,11 @@ void Load() {
     Read(parsed, "Renderer", v.filter_mode);
     Read(parsed, "Renderer", v.render_3d);
     Read(parsed, "Renderer", v.factor_3d);
+
+    // Custom texture packs from user_dir/load/textures/<title ID>/
+    Read(parsed, "Utility", v.custom_textures);
+    Read(parsed, "Utility", v.preload_textures);
+    Read(parsed, "Utility", v.async_custom_loading);
 
     // Layout
     Read(parsed, "Layout", v.layout_option);
