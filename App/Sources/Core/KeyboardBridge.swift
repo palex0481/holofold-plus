@@ -21,6 +21,15 @@ enum KeyboardBridge {
         request.button = Int32(max(buttonCount - 1, 0))
         lock.lock(); pending = request; lock.unlock()
 
+        #if os(visionOS)
+        // No UIKit alert here: it would go to whichever scene UIKit picks (often not the game
+        // window), and the game would wait forever. The game window shows it instead.
+        DispatchQueue.main.async {
+            lock.lock(); let stillPending = pending === request; lock.unlock()
+            guard stillPending else { return }
+            VisionKeyboard.shared.prompt = .init(hint: hint, maxLength: maxLength, buttonCount: buttonCount)
+        }
+        #else
         DispatchQueue.main.async {
             let alert = UIAlertController(title: "输入文字", message: hint.isEmpty ? nil : hint,
                                           preferredStyle: .alert)
@@ -57,6 +66,7 @@ enum KeyboardBridge {
             request.alert = alert
             top.present(alert, animated: true)
         }
+        #endif
 
         request.semaphore.wait()
         lock.lock(); if pending === request { pending = nil }; lock.unlock()
@@ -80,8 +90,25 @@ enum KeyboardBridge {
         guard let request else { return false }
         request.text = text
         request.semaphore.signal()
-        DispatchQueue.main.async { request.alert?.dismiss(animated: false) }
+        DispatchQueue.main.async {
+            request.alert?.dismiss(animated: false)
+            #if os(visionOS)
+            VisionKeyboard.shared.prompt = nil
+            #endif
+        }
         return true
+    }
+
+    /// Answers an open keyboard with the button the player chose (0 = left / cancel).
+    static func respond(text: String, button: Int32) {
+        lock.lock()
+        let request = pending
+        pending = nil
+        lock.unlock()
+        guard let request else { return }
+        request.text = text
+        request.button = button
+        request.semaphore.signal()
     }
 
     /// Unblocks the emulation thread if a keyboard is open (answers "cancel"/default).
@@ -93,7 +120,12 @@ enum KeyboardBridge {
         guard let request else { return }
         request.button = 0
         request.semaphore.signal()
-        DispatchQueue.main.async { request.alert?.dismiss(animated: false) }
+        DispatchQueue.main.async {
+            request.alert?.dismiss(animated: false)
+            #if os(visionOS)
+            VisionKeyboard.shared.prompt = nil
+            #endif
+        }
     }
 }
 
@@ -106,3 +138,35 @@ extension UIApplication {
         return top
     }
 }
+
+#if os(visionOS)
+import Combine
+
+/// The software keyboard request the game window is showing, if any.
+@MainActor
+final class VisionKeyboard: ObservableObject {
+    static let shared = VisionKeyboard()
+
+    struct Prompt: Identifiable {
+        let id = UUID()
+        let hint: String
+        let maxLength: Int
+        let buttonCount: Int
+    }
+
+    @Published var prompt: Prompt?
+
+    func submit(_ text: String) {
+        guard let prompt else { return }
+        var text = text
+        if prompt.maxLength > 0, text.count > prompt.maxLength { text = String(text.prefix(prompt.maxLength)) }
+        self.prompt = nil
+        KeyboardBridge.respond(text: text, button: Int32(max(prompt.buttonCount - 1, 0)))
+    }
+
+    func cancel() {
+        prompt = nil
+        KeyboardBridge.respond(text: "", button: 0)
+    }
+}
+#endif

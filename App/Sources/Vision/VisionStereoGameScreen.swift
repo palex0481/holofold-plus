@@ -255,6 +255,8 @@ struct VisionGameWindow: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var core = EmulatorCore.shared
     @ObservedObject private var library = GameLibrary.shared
+    @ObservedObject private var keyboard = VisionKeyboard.shared
+    @State private var keyboardText = ""
     @AppStorage(VisionStereo.depthKey) private var depth = VisionStereo.defaultDepth
     @AppStorage(VisionStereo.curvedKey) private var curved = true
     @AppStorage(VisionStereo.curveKey) private var curve = VisionStereo.defaultCurve
@@ -342,6 +344,16 @@ struct VisionGameWindow: View {
                 break
             }
         }
+        // The 3DS software keyboard (name entry and the like). The game waits until it's answered.
+        .alert(keyboard.prompt?.hint.isEmpty == false ? keyboard.prompt!.hint : "Enter Text",
+               isPresented: Binding(get: { keyboard.prompt != nil }, set: { if !$0 && keyboard.prompt != nil { keyboard.cancel() } })) {
+            TextField("Text", text: $keyboardText)
+            if (keyboard.prompt?.buttonCount ?? 1) >= 2 {
+                Button("Cancel", role: .cancel) { keyboard.cancel() }
+            }
+            Button("OK") { keyboard.submit(keyboardText) }
+        }
+        .onChange(of: keyboard.prompt?.id) { keyboardText = "" }
         .alert("Can’t Run This Game", isPresented: Binding(get: { if case .failed = core.state { return true }; return false },
                                               set: { if !$0 { closeWindows() } })) {
             Button("OK") { closeWindows() }
