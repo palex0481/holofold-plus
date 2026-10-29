@@ -152,7 +152,7 @@ private struct PerformanceSettings: View {
                         value: $s.cpuClock, in: 25...400, step: 25)
                     .disabled(s.cpuClockAuto)
             } footer: {
-                Text("自动：没有 JIT 时用 50%，解释器能保持全速，大多数游戏的算力也够用；有 JIT 时用 100%。手动调低能更快，但游戏加载时可能卡住；高于 100% 可让个别掉帧的游戏更流畅，但也可能让游戏出错。")
+                Text("自动：始终 100%（低于 100% 时游戏加载可能卡住）。手动调低能更快，但游戏加载时可能卡住；高于 100% 可让个别掉帧的游戏更流畅，但也可能让游戏出错。")
             }
         }
         .tint(Theme.accent).themedList().navigationTitle("性能")

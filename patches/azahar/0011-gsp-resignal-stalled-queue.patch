@@ -1,0 +1,65 @@
+diff --git a/src/common/settings.h b/src/common/settings.h
+index 60cc661..716cc4d 100644
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -694,6 +694,9 @@ struct AppleRendererToggles {
+     bool skip_unready_small_draws = true;
+     /// MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS = false (asynchronous queue submits).
+     bool async_queue_submits = true;
++    /// Re-signal a GSP interrupt event whose relay queue has not drained for 30 vblanks.
++    /// A recovery for a lost wake-up, so it is off by default.
++    bool gsp_resignal_stalled = false;
+ };
+ extern AppleRendererToggles apple_renderer;
+ 
+diff --git a/src/core/hle/service/gsp/gsp_gpu.cpp b/src/core/hle/service/gsp/gsp_gpu.cpp
+index edadfc6..596b0ed 100644
+--- a/src/core/hle/service/gsp/gsp_gpu.cpp
++++ b/src/core/hle/service/gsp/gsp_gpu.cpp
+@@ -592,6 +592,31 @@ void Service::GSP::GSP_GPU::ProcessPendingInterruptImpl(InterruptId interrupt_id
+             }
+         }
+ 
++        // Stall watch: a relay queue that holds entries but has not moved for 30 vblanks means
++        // its owner never woke up to drain it (a lost wake-up), or is stuck elsewhere.
++        if (interrupt_id == InterruptId::PDC1 && thread_id < MaxGSPThreads) {
++            const u8 count = interrupt_relay_queue->number_interrupts;
++            const u8 index = interrupt_relay_queue->index;
++            if (count != 0 && count == stall_count[thread_id] && index == stall_index[thread_id]) {
++                if (++stall_vblanks[thread_id] % 30 == 0) {
++                    const bool resignal = Settings::apple_renderer.gsp_resignal_stalled;
++                    LOG_WARNING(Service_GSP,
++                                "Relay queue of GSP thread {} stalled for {} vblanks (count={} "
++                                "index={} waiters={}){}",
++                                thread_id, stall_vblanks[thread_id], count, index,
++                                interrupt_event->GetWaitingThreads().size(),
++                                resignal ? ", re-signaling" : "");
++                    if (resignal) {
++                        interrupt_event->Signal();
++                    }
++                }
++            } else {
++                stall_vblanks[thread_id] = 0;
++            }
++            stall_count[thread_id] = count;
++            stall_index[thread_id] = index;
++        }
++
+         // Update framebuffer information if requested
+         const s32 screen_id = (interrupt_id == InterruptId::PDC0) ? 0 : 1;
+ 
+diff --git a/src/core/hle/service/gsp/gsp_gpu.h b/src/core/hle/service/gsp/gsp_gpu.h
+index fe08556..410bf13 100644
+--- a/src/core/hle/service/gsp/gsp_gpu.h
++++ b/src/core/hle/service/gsp/gsp_gpu.h
+@@ -626,6 +626,10 @@ private:
+ 
+     VramBackupHandler vram_backup_handler;
+ 
++    std::array<u8, MaxGSPThreads> stall_count{};
++    std::array<u8, MaxGSPThreads> stall_index{};
++    std::array<u32, MaxGSPThreads> stall_vblanks{};
++
+     friend class SessionData;
+ 
+     template <class Archive>

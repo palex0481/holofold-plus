@@ -1,0 +1,21 @@
+diff --git a/src/video_core/renderer_vulkan/vk_platform.cpp b/src/video_core/renderer_vulkan/vk_platform.cpp
+index aa3bf5c..bfa4431 100644
+--- a/src/video_core/renderer_vulkan/vk_platform.cpp
++++ b/src/video_core/renderer_vulkan/vk_platform.cpp
+@@ -359,9 +359,13 @@ vk::UniqueInstance CreateInstance(const Common::DynamicLibrary& library,
+     };
+ 
+ #ifdef __APPLE__
+-    // Use synchronous queue submits if async presentation is enabled, to avoid threading
+-    // indirection.
+-    const auto synchronous_queue_submits = Settings::values.async_presentation.GetValue();
++    // Queue submits stay asynchronous. Every vkQueueSubmit already takes scheduler.submit_mutex,
++    // which is the external synchronization Vulkan requires. MoltenVK's synchronous-submit mode
++    // makes vkQueueSubmit wait until the GPU finishes, and that wait is held under the same mutex:
++    // the present thread's copy then blocks the scheduler worker (and TickFrame's WaitWorker) for
++    // the whole frame, and a pipeline compile that lands inside a submit freezes the guest for
++    // seconds. Async presentation still has its own thread; it no longer needs synchronous submits.
++    constexpr auto synchronous_queue_submits = false;
+     // If the device is lost, make an attempt to resume if possible to avoid crashes.
+     constexpr auto resume_lost_device = true;
+     // Maximize concurrency to improve shader compilation performance.

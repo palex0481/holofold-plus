@@ -64,6 +64,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Finds multiplayer rooms on the same Wi-Fi and connects to nearby players for local wireless play.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save recorded demo clips to Photos.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Some games use motion controls.</string>
 	<key>UIApplicationSceneManifest</key>

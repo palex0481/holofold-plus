@@ -81,9 +81,29 @@ final class AppSettings: ObservableObject {
     }
     @AppStorage("asyncShaders") var asyncShaders = true { willSet { objectWillChange.send() } }
     @AppStorage("textureFilter") var textureFilter = 0 { willSet { objectWillChange.send() } }
+    /// Azahar texture_sampling: 0 = GameControlled (default), 1 = NearestNeighbor, 2 = Linear.
+    @AppStorage("textureSampling") var textureSampling = 0 { willSet { objectWillChange.send() } }
+    /// Custom texture packs from Azahar/load/textures/<titleID>/ (read at game boot), on by default.
+    @AppStorage("customTextures") var customTextures = true { willSet { objectWillChange.send() } }
+    /// Load the whole pack into RAM at boot (slower start, no first-use stutter).
+    @AppStorage("preloadTextures") var preloadTextures = false { willSet { objectWillChange.send() } }
+    /// Vision Pro: fixed pitch of the top (3D) screen in degrees, top edge away when positive,
+    /// like looking down at a 3DS held at an angle. 0 = upright (the old behavior). Layout only.
+    @AppStorage("visionScreenTiltDegrees") var screenTilt = 0.0 { willSet { objectWillChange.send() } }
     @AppStorage("linearFiltering") var linearFiltering = true { willSet { objectWillChange.send() } }
     @AppStorage("vsync") var vsync = true { willSet { objectWillChange.send() } }
-    @AppStorage("accurateMul") var accurateMul = true { willSet { objectWillChange.send() } }
+    @AppStorage("accurateMul") var accurateMul = false { willSet { objectWillChange.send() } }
+    /// Delay GSP "GPU done" interrupts like real hardware (Azahar's simulate_3ds_gpu_timings). Some
+    /// games are said to stall when they arrive instantly. Off by default: on Apple Vision Pro it
+    /// did not stop Super Mario 3D Land's stalls and Azahar still calls it experimental.
+    @AppStorage("gpuTimings") var gpuTimings = false { willSet { objectWillChange.send() } }
+    /// Apple renderer workarounds, each switchable to bisect stalls (patch 0010). Stability
+    /// defaults: no pipeline fast-path probe, wait for small-draw pipelines, synchronous submits.
+    @AppStorage("vkPipelineFastPath") var vkPipelineFastPath = false { willSet { objectWillChange.send() } }
+    @AppStorage("vkSkipUnreadyDraws") var vkSkipUnreadyDraws = false { willSet { objectWillChange.send() } }
+    @AppStorage("vkAsyncQueueSubmits") var vkAsyncQueueSubmits = false { willSet { objectWillChange.send() } }
+    /// Re-signal the GSP interrupt event when its relay queue has not drained for 30 vblanks.
+    @AppStorage("gspResignalStalled") var gspResignalStalled = false { willSet { objectWillChange.send() } }
     @AppStorage("diskShaderCache") var diskShaderCache = true { willSet { objectWillChange.send() } }
 
     // MARK: Performance
@@ -92,7 +112,10 @@ final class AppSettings: ObservableObject {
     /// interpreter keeps Pokémon Sun at full speed at 50 % (25 % starves its loading threads and
     /// freezes the picture at scene changes; 100 % runs at roughly half speed).
     @AppStorage("cpuClockAuto") var cpuClockAuto = true { willSet { objectWillChange.send() } }
-    var effectiveCPUClock: Int { cpuClockAuto ? (JITHelper.isEnabled ? 100 : 50) : cpuClock }
+    /// Auto is 100 % with or without JIT. Without JIT it used to be 50 %: the interpreter kept full
+    /// speed, but games got half the CPU time per frame, and Super Mario 3D Land hung loading a
+    /// level (every hang log on the device had Core_CPUClockPercentage: 50).
+    var effectiveCPUClock: Int { cpuClockAuto ? 100 : cpuClock }
     @AppStorage("frameLimit") var frameLimit = 100 { willSet { objectWillChange.send() } }
     @AppStorage("fastForwardSpeed") var fastForwardSpeed = 300 { willSet { objectWillChange.send() } }
     @AppStorage("jitMode") private var jitModeRaw = JITMode.auto.rawValue { willSet { objectWillChange.send() } }
@@ -139,9 +162,6 @@ final class AppSettings: ObservableObject {
     /// return prediction, specialised handlers). For telling whether a game hang comes from them.
     /// Applied when a game starts; no effect while JIT is in use.
     @AppStorage("interpreterCompat") var interpreterCompat = false { willSet { objectWillChange.send() } }
-    /// Loads texture packs from Azahar/load/textures/<title ID>/. Textures load asynchronously and are
-    /// never preloaded: preloading a large pack holds it all in memory at once.
-    @AppStorage("customTextures") var customTextures = true { willSet { objectWillChange.send() } }
     @AppStorage("hideControllerWithGamepad") var hideControllerWithGamepad = true { willSet { objectWillChange.send() } }
 
     // MARK: Multiplayer
@@ -159,6 +179,77 @@ final class AppSettings: ObservableObject {
             cpuClockAuto = false
         }
         // 0.55 was the old default; with the lighter keys it is too faint. Move it up once.
+        #if os(visionOS)
+        // One-time step down for existing installs: 4× stereo with accurate multiplication made
+        // frame pacing erratic on Apple Vision Pro (stalls up to seconds, 40–46 fps).
+        if !d.bool(forKey: "visionGfxLowered1") {
+            d.set(2, forKey: "resolutionFactor")
+            d.set(false, forKey: "accurateMul")
+            d.set(0, forKey: "textureFilter")
+            d.set(true, forKey: "visionGfxLowered1")
+        }
+        // One-time stability preset (Super Mario 3D Land freezes): 1× native, synchronous shaders,
+        // accurate multiplication, GPU timing simulation, no FXAA, 2D (one eye), 100 % speed.
+        if !d.bool(forKey: "visionStability1") {
+            d.set(1, forKey: "resolutionFactor")
+            d.set(false, forKey: "asyncShaders")
+            d.set(true, forKey: "accurateMul")
+            d.set(false, forKey: "gpuTimings")
+            d.set("off", forKey: "visionAntialiasing")
+            d.set(100, forKey: "frameLimit")
+            d.set(true, forKey: "visionStability1")
+        }
+        // GPU timing simulation is experimental upstream (default off since 2026-07) and lines up with
+        // the intro/title lost-wakeup hangs in Super Mario 3D Land: force it off once for every install.
+        if !d.bool(forKey: "gpuTimingsOff1") {
+            d.set(false, forKey: "gpuTimings")
+            d.set(true, forKey: "gpuTimingsOff1")
+            VisionDiag.log("migration: gpuTimings -> false (gpuTimingsOff1)")
+        }
+        // The freeze persists with the safe graphics preset: turn the GSP stalled-queue re-signal on once.
+        if !d.bool(forKey: "gspResignalOn1") {
+            d.set(true, forKey: "gspResignalStalled")
+            d.set(true, forKey: "gspResignalOn1")
+            VisionDiag.log("migration: gspResignalStalled -> true (gspResignalOn1)")
+        }
+        // Sharper picture on top of the stability preset: 2x resolution with FXAA, once.
+        if !d.bool(forKey: "visionSharp2x1") {
+            d.set(2, forKey: "resolutionFactor")
+            d.set("fxaa", forKey: "visionAntialiasing")
+            d.set(true, forKey: "visionSharp2x1")
+            VisionDiag.log("migration: resolutionFactor -> 2, visionAntialiasing -> fxaa (visionSharp2x1)")
+        }
+        // 4x is back (after the stability and 2x presets): 4x resolution with FXAA, once.
+        if !d.bool(forKey: "visionSharp4x1") {
+            d.set(4, forKey: "resolutionFactor")
+            d.set("fxaa", forKey: "visionAntialiasing")
+            d.set(true, forKey: "visionSharp4x1")
+            VisionDiag.log("migration: resolutionFactor -> 4, visionAntialiasing -> fxaa (visionSharp4x1)")
+        }
+        // 5x as the default (Pat, Oct 28): a stored 4x would otherwise win, so set 5 once.
+        if !d.bool(forKey: "visionSharp5x1") {
+            d.set(5, forKey: "resolutionFactor")
+            d.set(true, forKey: "visionSharp5x1")
+            VisionDiag.log("migration: resolutionFactor -> 5 (visionSharp5x1)")
+        }
+        // A CPU clock below 100 % hung Super Mario 3D Land loading levels: back to auto (100 %), once.
+        if !d.bool(forKey: "cpuClock100v1") {
+            let before = d.object(forKey: "cpuClock") as? Int ?? 100
+            d.set(true, forKey: "cpuClockAuto")
+            if before < 100 { d.set(100, forKey: "cpuClock") }
+            d.set(true, forKey: "cpuClock100v1")
+            VisionDiag.log("migration: cpuClockAuto -> true, cpuClock \(before) -> \(max(before, 100)) (cpuClock100v1)")
+        }
+        if !d.bool(forKey: "visionDefault2D1") {
+            d.set(0, forKey: "visionStereoDepth")
+            d.set(true, forKey: "visionDefault2D1")
+        }
+        // Stereo is the default again: move every install to a full 3D slider once.
+        if !d.bool(forKey: "visionDefault3D1") {
+            d.set(100, forKey: "visionStereoDepth")
+            d.set(true, forKey: "visionDefault3D1")
+        }
+        #endif
         if !d.bool(forKey: "controllerOpacityMigrated") {
             if d.object(forKey: "controllerOpacity") != nil, abs(controllerOpacity - 0.55) < 0.001 { controllerOpacity = 0.75 }
             d.set(true, forKey: "controllerOpacityMigrated")
@@ -179,6 +270,13 @@ final class AppSettings: ObservableObject {
         #else
         let allowJIT = true
         #endif
+        #if os(visionOS)
+        // Texture filters + custom textures render black on Vulkan/MoltenVK (azahar #2354), and
+        // No switch for it in the app: always off, whatever an earlier build stored.
+        let coreTextureFilter = 0
+        #else
+        let coreTextureFilter = textureFilter
+        #endif
         let ini = """
         ; Written by the 3DS_iOS app. Edit settings in the app instead of here.
         [Core]
@@ -192,17 +290,18 @@ final class AppSettings: ObservableObject {
         use_disk_shader_cache = \(diskShaderCache)
         async_shader_compilation = \(asyncShaders)
         async_presentation = true
+        simulate_3ds_gpu_timings = \(gpuTimings)
+        apple_pipeline_fast_path = \(vkPipelineFastPath)
+        apple_skip_unready_small_draws = \(vkSkipUnreadyDraws)
+        apple_async_queue_submits = \(vkAsyncQueueSubmits)
+        apple_gsp_resignal_stalled = \(gspResignalStalled)
         spirv_shader_gen = true
         resolution_factor = \(resolutionFactor)
         frame_limit = \(frameLimit)
         use_vsync = \(vsync)
-        texture_filter = \(textureFilter)
+        texture_filter = \(coreTextureFilter)
+        texture_sampling = \(textureSampling)
         filter_mode = \(linearFiltering)
-
-        [Utility]
-        custom_textures = \(customTextures)
-        preload_textures = false
-        async_custom_loading = true
 
         [Layout]
         layout_option = \(landscapeLayout.coreValue)
@@ -228,6 +327,11 @@ final class AppSettings: ObservableObject {
         web_api_url = \(lobbyURL)
         network_token = \(lobbyToken)
 
+        [Utility]
+        custom_textures = \(customTextures)
+        preload_textures = \(preloadTextures)
+        async_custom_loading = true
+
         [Miscellaneous]
         log_filter = *:Info
 
@@ -251,9 +355,9 @@ enum VisionMemoryBudget {
         // 0 = not reported (the Simulator always says 0): take the middle step.
         guard availableBytes > 0 else { return 3 }
         let gib = Double(availableBytes) / 1_073_741_824
-        if gib >= 4.5 { return 4 }
-        if gib >= 3.0 { return 3 }
-        return 2
+        // 4×/3× stereo made frame pacing erratic on the device (40–46 fps, multi-second stalls);
+        // 2× held 60 fps.
+        return gib >= 3.0 ? 5 : 1   // 5x default with the Increased Memory Limit
     }()
 }
 #endif

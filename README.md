@@ -1,6 +1,17 @@
-# Holofold
+> **Holofold Plus is a modified fork of [zlinoliver/Holofold](https://github.com/zlinoliver/Holofold)** by zlinoliver, distributed under the same GNU GPL v2 or later license (see [LICENSE.txt](LICENSE.txt)). All credit for Holofold goes to the original author and to the Azahar, Citra and Bifold projects it builds on. Changes in this fork:
+>
+> - Cartridge-insert launcher: the card flies off the shelf into a 3D handheld that turns, opens and zooms into the game's screens (A or a tap skips); load-on-tap boot with a cross-fade to the first frame.
+> - Screen tilt slider in the in-game Controls panel (−30° to +30°, live) that pitches the 3D top screen for a stronger depth effect.
+> - In-game Controls panel beside the screens: live 3D depth slider, live Top and Bottom screen size sliders, Flat/Curved toggle.
+> - Demo recorder: records the emulator output as side-by-side 3D H.264 MP4 with game audio (YouTube 3D tagged), optional touch screen, saved to Photos or shared.
+> - Textures menu on the shelf: custom texture packs (on by default), preload, and Linear texture sampling; xBRZ texture filtering removed (it turned custom-pack textures black on Vulkan).
+> - Always stereoscopic 3D in a window (2D and immersive modes removed); 5× internal resolution by default; smaller bottom screen.
+> - Performance and stability patches for Azahar on Apple GPUs (patches 0004–0011): asynchronous MoltenVK pipelines and queue submits, persistent driver pipeline cache, interpreter page-pointer cache, GSP missed-interrupt signalling and stalled-queue re-signal, switchable renderer workarounds.
+> - Hang recovery: if a game stops drawing, the settings reload is re-applied step by step to un-stick it.
+> - Input fixes: in-game controller no longer goes dead after the library closes; per-frame controller polling fallback; DualSense touchpad click.
+> - Reliable exit back to the library; tuned defaults (auto CPU clock 100%, GPU timing simulation off); `bootstrap.sh` records applied patches so re-runs are clean.
 
-**English** | [简体中文](README.zh-CN.md)
+# Holofold Plus
 
 **3DS emulation for Apple Vision Pro, in real stereoscopic 3D.**
 

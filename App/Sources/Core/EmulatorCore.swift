@@ -34,6 +34,21 @@ final class EmulatorCore: ObservableObject {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         // Visible in the Files app (UIFileSharingEnabled) so users can drop in sysdata / saves.
         userDirectory = docs.appendingPathComponent("Azahar", isDirectory: true)
+        // Texture packs go in Files › <app> › Azahar › load › textures › <titleID> (the core's LoadDir).
+        try? FileManager.default.createDirectory(at: texturePacksDirectory, withIntermediateDirectories: true)
+    }
+
+    /// <Documents>/Azahar/load/textures: Azahar's UserPath::LoadDir + "textures/".
+    var texturePacksDirectory: URL {
+        userDirectory.appendingPathComponent("load/textures", isDirectory: true)
+    }
+
+    /// Image files (png/dds/ktx) in the game's pack folder, the files the core's
+    /// CustomTexManager::FindCustomTextures parses (it recurses into subfolders).
+    func customTextureCount(titleID: UInt64) -> Int {
+        let dir = texturePacksDirectory.appendingPathComponent(String(format: "%016llX", titleID), isDirectory: true)
+        guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else { return 0 }
+        return e.compactMap { $0 as? URL }.filter { ["png", "dds", "ktx"].contains($0.pathExtension.lowercased()) }.count
     }
 
     // MARK: - Lifetime
@@ -92,6 +107,14 @@ final class EmulatorCore: ObservableObject {
         applyInterpreterMode()
         reloadSettings()
         currentGame = game
+        #if os(visionOS)
+        let s = AppSettings.shared
+        if s.customTextures {
+            VisionDiag.log("textures: custom textures enabled, \(customTextureCount(titleID: game.titleID)) textures found in load/textures/\(game.titleIDString) (preload \(s.preloadTextures ? "on" : "off"))")
+        } else {
+            VisionDiag.log("textures: custom textures off (\(customTextureCount(titleID: game.titleID)) files in load/textures/\(game.titleIDString))")
+        }
+        #endif
         state = .loading(stage: 0, progress: 0)
         PlayHistory.shared.sessionStarted(game)
 

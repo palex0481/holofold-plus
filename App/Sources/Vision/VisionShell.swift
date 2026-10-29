@@ -20,14 +20,17 @@ enum VisionShellRegistry {
     static var current: VisionShell = MinimalShell()
 }
 
-/// The public build's shell: no launcher. The boot window closes once the game windows are up,
-/// and leaving the game simply closes them (opening the app again boots the game again).
+/// The public build's shell: the library (boot) window closes once the game windows are up and
+/// comes back when the game ends.
 struct MinimalShell: VisionShell {
     func gameDidStart(openWindow: OpenWindowAction, dismissWindow: DismissWindowAction) {
         dismissWindow(id: VisionWindowID.boot)
     }
 
-    func gameDidEnd(openWindow: OpenWindowAction) {}
+    /// Back to the library.
+    func gameDidEnd(openWindow: OpenWindowAction) {
+        openWindow(id: VisionWindowID.boot)
+    }
 
     func recoverFromOrphanWindow(openWindow: OpenWindowAction) {
         openWindow(id: VisionWindowID.boot)

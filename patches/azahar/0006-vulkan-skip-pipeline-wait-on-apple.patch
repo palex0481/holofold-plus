@@ -1,0 +1,19 @@
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 96fe552..30ba5a2 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -467,7 +468,14 @@ bool RasterizerVulkan::AccelerateDrawBatchInternal(bool is_indexed) {
+         SetupIndexArray();
+     }
+ 
++#if defined(__APPLE__)
++    // Draws of 6 vertices or fewer (UI quads, clears) used to compile on the caller. On MoltenVK
++    // that compile takes seconds and runs on the scheduler worker, which TickFrame waits for.
++    // Skip the draw until the pipeline is ready; async_shaders is the default.
++    const bool wait_built = false;
++#else
+     const bool wait_built = !async_shaders || regs.pipeline.num_vertices <= 6;
++#endif
+     if (!pipeline_cache.BindPipeline(pipeline_info, wait_built)) {
+         return true;
+     }

@@ -1,0 +1,21 @@
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index 290b187..ec4eab5 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -96,7 +96,15 @@ bool GraphicsPipeline::TryBuild(bool wait_built) {
+     }
+ 
+     // Ask the driver if it can give us the pipeline quickly.
+-    if (!shaders_pending && instance.IsPipelineCreationCacheControlSupported() && Build(true)) {
++#if defined(__APPLE__)
++    // MoltenVK reports pipeline creation cache control but ignores FAIL_ON_PIPELINE_COMPILE_REQUIRED:
++    // the "quick" probe compiles the Metal pipeline synchronously on the emulation thread (multi-second
++    // stalls that make games miss events and stop drawing). Always use the async worker instead.
++    constexpr bool kTryFastPath = false;
++#else
++    constexpr bool kTryFastPath = true;
++#endif
++    if (kTryFastPath && !shaders_pending && instance.IsPipelineCreationCacheControlSupported() && Build(true)) {
+         return true;
+     }
+ 

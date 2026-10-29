@@ -1,0 +1,26 @@
+diff --git a/src/core/hle/service/gsp/gsp_gpu.cpp b/src/core/hle/service/gsp/gsp_gpu.cpp
+index 6f915e4..edadfc6 100644
+--- a/src/core/hle/service/gsp/gsp_gpu.cpp
++++ b/src/core/hle/service/gsp/gsp_gpu.cpp
+@@ -556,6 +556,10 @@ void Service::GSP::GSP_GPU::ProcessPendingInterruptImpl(InterruptId interrupt_id
+     auto queue_interrupt = [&]() {
+         if (interrupt_relay_queue->number_interrupts >= InterruptRelayQueue::max_slots) {
+             interrupt_relay_queue->error_code = InterruptRelayQueue::queue_full_error;
++            // Still wake waiters. Dropping the signal here leaves a thread in
++            // WaitSynchronizationN forever: vblanks keep running (the emulator reports full
++            // speed and sits in the frame limiter) but this queue never drains.
++            interrupt_event->Signal();
+         } else {
+             u8 next = interrupt_relay_queue->index;
+             next += interrupt_relay_queue->number_interrupts;
+@@ -579,6 +583,10 @@ void Service::GSP::GSP_GPU::ProcessPendingInterruptImpl(InterruptId interrupt_id
+                 } else {
+                     interrupt_relay_queue->missed_PDC1++;
+                 }
++                // Past this threshold the interrupt is not queued, but a thread already waiting
++                // on the GSP event must still wake so it can observe missed_PDC*. Otherwise the
++                // guest sits in svc 0x25 for many seconds while the frame limiter holds 100%.
++                interrupt_event->Signal();
+             } else {
+                 queue_interrupt();
+             }

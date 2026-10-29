@@ -39,6 +39,7 @@ resolution_factor = 2
 frame_limit = 100
 use_vsync = true
 texture_filter = 0
+texture_sampling = 0
 filter_mode = true
 render_3d = 0
 factor_3d = 0
@@ -112,7 +113,7 @@ std::atomic_bool g_stereo_override{false};
 std::atomic_int g_stereo_depth{100};
 
 void SetStereoOverride(bool enabled, int depth_percent) {
-    g_stereo_depth = std::clamp(depth_percent, 1, 100);
+    g_stereo_depth = std::clamp(depth_percent, 0, 100);
     g_stereo_override = enabled;
 }
 
@@ -149,19 +150,20 @@ void Load() {
     Read(parsed, "Renderer", v.use_disk_shader_cache);
     Read(parsed, "Renderer", v.async_shader_compilation);
     Read(parsed, "Renderer", v.async_presentation);
+    Read(parsed, "Renderer", v.simulate_3ds_gpu_timings);
     Read(parsed, "Renderer", v.spirv_shader_gen);
     Read(parsed, "Renderer", v.resolution_factor);
     Read(parsed, "Renderer", v.frame_limit);
     Read(parsed, "Renderer", v.use_vsync);
     Read(parsed, "Renderer", v.texture_filter);
+    Read(parsed, "Renderer", v.texture_sampling);
     Read(parsed, "Renderer", v.filter_mode);
-    Read(parsed, "Renderer", v.render_3d);
-    Read(parsed, "Renderer", v.factor_3d);
-
-    // Custom texture packs from user_dir/load/textures/<title ID>/
+    // Custom texture packs: <user_dir>/load/textures/<titleID>/, found at game boot.
     Read(parsed, "Utility", v.custom_textures);
     Read(parsed, "Utility", v.preload_textures);
     Read(parsed, "Utility", v.async_custom_loading);
+    Read(parsed, "Renderer", v.render_3d);
+    Read(parsed, "Renderer", v.factor_3d);
 
     // Layout
     Read(parsed, "Layout", v.layout_option);
@@ -224,10 +226,24 @@ void Load() {
     if (g_stereo_override) {
         // Both eyes of the top screen, each in its own half of the (double-width) frame. The
         // 3D slider must be above 0, otherwise games render the same image for both eyes.
+        // At 0 the game sees its slider off and renders one eye only (2D, and cheaper).
         v.render_3d = Settings::StereoRenderOption::SideBySideFull;
         v.factor_3d = static_cast<u32>(g_stereo_depth.load());
         v.swap_eyes_3d = false;
     }
+
+    auto& apple = Settings::apple_renderer;
+    apple.pipeline_fast_path = parsed.GetBoolean("Renderer", "apple_pipeline_fast_path", false);
+    apple.skip_unready_small_draws = parsed.GetBoolean("Renderer", "apple_skip_unready_small_draws", false);
+    apple.async_queue_submits = parsed.GetBoolean("Renderer", "apple_async_queue_submits", false);
+    apple.gsp_resignal_stalled = parsed.GetBoolean("Renderer", "apple_gsp_resignal_stalled", false);
+    LOG_INFO(Config,
+             "Stability: async_shaders={} accurate_mul={} gpu_timings={} resolution={} "
+             "frame_limit={} pipeline_fast_path={} skip_unready_small_draws={} async_queue_submits={} gsp_resignal_stalled={}",
+             v.async_shader_compilation.GetValue(), v.shaders_accurate_mul.GetValue(),
+             v.simulate_3ds_gpu_timings.GetValue(), v.resolution_factor.GetValue(),
+             v.frame_limit.GetValue(), apple.pipeline_fast_path, apple.skip_unready_small_draws,
+             apple.async_queue_submits, apple.gsp_resignal_stalled);
 
     BindInput();
     LOG_INFO(Config, "Loaded {} (cpu_jit={}, api={})", path, v.use_cpu_jit.GetValue(),

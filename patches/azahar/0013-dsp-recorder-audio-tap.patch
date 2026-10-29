@@ -1,0 +1,63 @@
+diff --git a/src/audio_core/dsp_interface.cpp b/src/audio_core/dsp_interface.cpp
+index e0ce087..7a27f61 100644
+--- a/src/audio_core/dsp_interface.cpp
++++ b/src/audio_core/dsp_interface.cpp
+@@ -2,6 +2,7 @@
+ // Licensed under GPLv2 or any later version
+ // Refer to the license.txt file included.
+ 
++#include <atomic>
+ #include <cstddef>
+ #include "audio_core/dsp_interface.h"
+ #include "audio_core/sink.h"
+@@ -36,10 +37,26 @@ void DspInterface::EnableStretching(bool enable) {
+     enable_time_stretching = enable;
+ }
+ 
++namespace {
++std::atomic<DspInterface::AudioTap> g_audio_tap{nullptr};
++std::atomic<void*> g_audio_tap_context{nullptr};
++void Tap(const s16* data, std::size_t frames) {
++    if (auto tap = g_audio_tap.load(std::memory_order_acquire)) {
++        tap(data, frames, g_audio_tap_context.load(std::memory_order_relaxed));
++    }
++}
++} // namespace
++
++void DspInterface::SetAudioTap(AudioTap tap, void* context) {
++    g_audio_tap_context.store(context, std::memory_order_relaxed);
++    g_audio_tap.store(tap, std::memory_order_release);
++}
++
+ void DspInterface::OutputFrame(StereoFrame16 frame) {
+     if (!sink) {
+         return;
+     }
++    Tap(frame.data()->data(), frame.size());
+ 
+     if (sink->ImmediateSubmission()) {
+         sink->PushSamples(frame.data(), frame.size());
+@@ -57,6 +74,7 @@ void DspInterface::OutputSample(std::array<s16, 2> sample) {
+     if (!sink) {
+         return;
+     }
++    Tap(sample.data(), 1);
+ 
+     if (sink->ImmediateSubmission()) {
+         sink->PushSamples(&sample, 1);
+diff --git a/src/audio_core/dsp_interface.h b/src/audio_core/dsp_interface.h
+index 96877a9..9ab9c28 100644
+--- a/src/audio_core/dsp_interface.h
++++ b/src/audio_core/dsp_interface.h
+@@ -103,6 +103,11 @@ public:
+     /// Enable/Disable audio stretching.
+     void EnableStretching(bool enable);
+ 
++    /// Recorder tap: every mixed stereo frame (interleaved s16 L/R at the native rate) is
++    /// passed here as it leaves the DSP, before the sink. nullptr disables it.
++    using AudioTap = void (*)(const s16* interleaved, std::size_t num_frames, void* context);
++    static void SetAudioTap(AudioTap tap, void* context);
++
+ protected:
+     void OutputFrame(StereoFrame16 frame);
+     void OutputSample(std::array<s16, 2> sample);

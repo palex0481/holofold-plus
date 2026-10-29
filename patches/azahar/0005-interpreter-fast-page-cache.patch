@@ -1,0 +1,138 @@
+diff --git a/src/core/arm/skyeye_common/armstate.h b/src/core/arm/skyeye_common/armstate.h
+index 98e478f..e48cd7e 100644
+--- a/src/core/arm/skyeye_common/armstate.h
++++ b/src/core/arm/skyeye_common/armstate.h
+@@ -290,8 +290,24 @@ public:
+     static constexpr u32 PAGE_BITS = 12;
+     static constexpr u32 PAGE_OFFSET_MASK = (1u << PAGE_BITS) - 1;
+     /// Host pointer of the page holding `address` if it is plain memory, else null.
++    /// The page-table array is 8 MB, so a tight LDR/STR loop misses L1 on every access. Two
++    /// direct-mapped slots (even/odd virtual pages) cover a stack and a nearby buffer. The slots
++    /// are dropped whenever MemorySystem bumps its generation: the rasterizer nulls a page pointer
++    /// to force the slow path, and a stale host pointer would skip that.
+     u8* FastPage(u32 address) const {
+-        return page_pointers[address >> PAGE_BITS];
++        const u32 generation = memory.PagePointerGeneration();
++        const u32 index = address >> PAGE_BITS;
++        const unsigned slot = index & 1u;
++        if (generation != page_cache_generation) [[unlikely]] {
++            page_cache_generation = generation;
++            page_cache_index[0] = page_cache_index[1] = ~0u;
++        } else if (page_cache_index[slot] == index) [[likely]] {
++            return page_cache_ptr[slot];
++        }
++        u8* const page = page_pointers[index];
++        page_cache_index[slot] = index;
++        page_cache_ptr[slot] = page;
++        return page;
+     }
+ 
+     /// The current page table's pointer array, kept here so a memory access is one load less
+@@ -301,9 +317,16 @@ public:
+     void RefreshPagePointers() {
+         u8* const* pages = memory.CurrentPagePointers();
+         page_pointers = pages ? pages : NoPages();
++        // 0 never matches PagePointerGeneration(), so the next access reloads both slots.
++        page_cache_generation = 0;
++        page_cache_index[0] = page_cache_index[1] = ~0u;
++        page_cache_ptr[0] = page_cache_ptr[1] = nullptr;
+     }
+     static u8* const* NoPages();
+     u8* const* page_pointers = NoPages();
++    mutable u32 page_cache_generation = 0;
++    mutable u32 page_cache_index[2] = {~0u, ~0u};
++    mutable u8* page_cache_ptr[2] = {nullptr, nullptr};
+ 
+     std::array<u32, 16> Reg{}; // The current register file
+     std::array<u32, 2> Reg_usr{};
+diff --git a/src/core/memory.cpp b/src/core/memory.cpp
+index 67cafda..a5e1bf5 100644
+--- a/src/core/memory.cpp
++++ b/src/core/memory.cpp
+@@ -410,6 +410,7 @@ void MemorySystem::serialize(Archive& ar, const unsigned int file_version) {
+         current_page_pointers = impl->current_page_table
+                                     ? impl->current_page_table->GetPointerArray().data()
+                                     : nullptr;
++        NotifyPagePointersChanged();
+     }
+ }
+ 
+@@ -418,6 +419,7 @@ SERIALIZE_IMPL(MemorySystem)
+ void MemorySystem::SetCurrentPageTable(std::shared_ptr<PageTable> page_table) {
+     impl->current_page_table = page_table;
+     current_page_pointers = page_table ? page_table->GetPointerArray().data() : nullptr;
++    NotifyPagePointersChanged();
+ }
+ 
+ std::shared_ptr<PageTable> MemorySystem::GetCurrentPageTable() const {
+@@ -473,6 +475,7 @@ void MemorySystem::RegisterWatchpoint(const Kernel::Process& process, VAddr addr
+ 
+         current = page_base + CITRA_PAGE_SIZE;
+     }
++    NotifyPagePointersChanged();
+ }
+ 
+ void MemorySystem::UnregisterWatchpoint(const Kernel::Process& process, VAddr addr, u32 size) {
+@@ -512,6 +515,7 @@ void MemorySystem::UnregisterWatchpoint(const Kernel::Process& process, VAddr ad
+ 
+         current = page_base + CITRA_PAGE_SIZE;
+     }
++    NotifyPagePointersChanged();
+ }
+ 
+ void MemorySystem::MapPages(PageTable& page_table, u32 base, u32 size, MemoryRef memory,
+@@ -541,6 +545,7 @@ void MemorySystem::MapPages(PageTable& page_table, u32 base, u32 size, MemoryRef
+         if (memory != nullptr && memory.GetSize() > CITRA_PAGE_SIZE)
+             memory += CITRA_PAGE_SIZE;
+     }
++    NotifyPagePointersChanged();
+ }
+ 
+ void MemorySystem::MapMemoryRegion(PageTable& page_table, VAddr base, u32 size, MemoryRef target) {
+@@ -1047,6 +1052,7 @@ void MemorySystem::RasterizerMarkRegionCached(PAddr start, u32 size, bool cached
+             }
+         }
+     }
++    NotifyPagePointersChanged();
+ }
+ 
+ u8 MemorySystem::Read8(const VAddr addr) {
+diff --git a/src/core/memory.h b/src/core/memory.h
+index cfd5e82..3b25ec7 100644
+--- a/src/core/memory.h
++++ b/src/core/memory.h
+@@ -4,6 +4,7 @@
+ 
+ #pragma once
+ #include <array>
++#include <atomic>
+ #include <cstddef>
+ #include <optional>
+ #include <string>
+@@ -292,6 +293,18 @@ public:
+         return current_page_pointers;
+     }
+ 
++    /// Bumped on every page-pointer write (map, unmap, rasterizer cache). The interpreter's
++    /// FastPage cache reloads when this changes. Starts at 1 so 0 means "never loaded".
++    /// Release/acquire so a pointer update on another thread is visible once the new generation is.
++    u32 PagePointerGeneration() const {
++        return page_pointer_generation.load(std::memory_order_acquire);
++    }
++    void NotifyPagePointersChanged() {
++        const u32 cur = page_pointer_generation.load(std::memory_order_relaxed);
++        const u32 next = cur + 1;
++        page_pointer_generation.store(next == 0 ? 1 : next, std::memory_order_release);
++    }
++
+     /**
+      * Gets a pointer to the given address.
+      *
+@@ -760,6 +773,7 @@ private:
+     class Impl;
+     std::unique_ptr<Impl> impl;
+     u8** current_page_pointers = nullptr;
++    std::atomic<u32> page_pointer_generation{1};
+ 
+     PhysMemRegionInfo phys_mem_region_info_cache{};
+ 

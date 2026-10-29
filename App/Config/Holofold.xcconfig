@@ -13,8 +13,8 @@ HOLOFOLD_INCREASED_MEMORY = NO
 
 // Boot: title ID (16 hex digits) or file name of the game to start; empty = your first game.
 HOLOFOLD_AUTOBOOT_TITLE_ID =
-// Resume from the auto-save made when you last left the game.
-HOLOFOLD_AUTO_RESUME = YES
+// Unused: every launch is a cold boot and leaving a game writes no save state.
+HOLOFOLD_AUTO_RESUME = NO
 
 // App icon asset name; empty = no icon (the system shows a blank one).
 HOLOFOLD_APPICON =

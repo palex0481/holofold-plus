@@ -124,7 +124,7 @@ targets:
       base:
         INFOPLIST_FILE: App/Config/Info-visionOS.plist   # multiple scenes: the stereo game uses two windows
         PRODUCT_NAME: Holofold
-        PRODUCT_DISPLAY_NAME: Holofold
+        PRODUCT_DISPLAY_NAME: Holofold Plus
         TARGETED_DEVICE_FAMILY: "7"
         SUPPORTED_PLATFORMS: "xros xrsimulator"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor

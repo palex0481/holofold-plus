@@ -1,0 +1,75 @@
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -472,7 +472,9 @@
+     // Draws of 6 vertices or fewer (UI quads, clears) used to compile on the caller. On MoltenVK
+     // that compile takes seconds and runs on the scheduler worker, which TickFrame waits for.
+     // Skip the draw until the pipeline is ready; async_shaders is the default.
+-    const bool wait_built = false;
++    const bool wait_built = Settings::apple_renderer.skip_unready_small_draws
++                                ? false
++                                : (!async_shaders || regs.pipeline.num_vertices <= 6);
+ #else
+     const bool wait_built = !async_shaders || regs.pipeline.num_vertices <= 6;
+ #endif
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -9,6 +9,7 @@
+ #include "common/alignment.h"
+ #include "common/hash.h"
+ #include "common/microprofile.h"
++#include "common/settings.h"
+ #include "video_core/renderer_vulkan/pica_to_vk.h"
+ #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+ #include "video_core/renderer_vulkan/vk_instance.h"
+@@ -107,7 +108,7 @@
+     // MoltenVK reports pipeline creation cache control but ignores FAIL_ON_PIPELINE_COMPILE_REQUIRED:
+     // the "quick" probe compiles the Metal pipeline synchronously on the emulation thread (multi-second
+     // stalls that make games miss events and stop drawing). Always use the async worker instead.
+-    constexpr bool kTryFastPath = false;
++    const bool kTryFastPath = Settings::apple_renderer.pipeline_fast_path;
+ #else
+     constexpr bool kTryFastPath = true;
+ #endif
+--- a/src/video_core/renderer_vulkan/vk_platform.cpp
++++ b/src/video_core/renderer_vulkan/vk_platform.cpp
+@@ -365,7 +365,7 @@
+     // the present thread's copy then blocks the scheduler worker (and TickFrame's WaitWorker) for
+     // the whole frame, and a pipeline compile that lands inside a submit freezes the guest for
+     // seconds. Async presentation still has its own thread; it no longer needs synchronous submits.
+-    constexpr auto synchronous_queue_submits = false;
++    const vk::Bool32 synchronous_queue_submits = Settings::apple_renderer.async_queue_submits ? 0 : 1;
+     // If the device is lost, make an attempt to resume if possible to avoid crashes.
+     constexpr auto resume_lost_device = true;
+     // Maximize concurrency to improve shader compilation performance.
+--- a/src/common/settings.h
++++ b/src/common/settings.h
+@@ -684,6 +684,19 @@
+ 
+ extern Values values;
+ 
++/// Apple/MoltenVK workarounds that can each be switched off to bisect stalls. Set by the frontend
++/// before the renderer is created; read on the emulation and render threads.
++struct AppleRendererToggles {
++    /// Probe FAIL_ON_PIPELINE_COMPILE_REQUIRED before handing a pipeline to the async worker.
++    /// MoltenVK compiles synchronously during the probe, so this is off by default.
++    bool pipeline_fast_path = false;
++    /// Skip small draws (<= 6 vertices) until their pipeline is built instead of waiting for it.
++    bool skip_unready_small_draws = true;
++    /// MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS = false (asynchronous queue submits).
++    bool async_queue_submits = true;
++};
++extern AppleRendererToggles apple_renderer;
++
+ bool IsConfiguringGlobal();
+ void SetConfiguringGlobal(bool is_global);
+ 
+--- a/src/common/settings.cpp
++++ b/src/common/settings.cpp
+@@ -76,6 +76,7 @@
+ } // Anonymous namespace
+ 
+ Values values = {};
++AppleRendererToggles apple_renderer = {};
+ static bool configuring_global = true;
+ bool is_temporary_frame_limit;
+ double temporary_frame_limit;

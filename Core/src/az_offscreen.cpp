@@ -36,3 +36,24 @@ extern "C" void az_offscreen_release(int slot) {
 extern "C" void az_set_stereo(bool enabled, int depth_percent) {
     AzIOS::Config::SetStereoOverride(enabled, depth_percent);
 }
+
+// Live 3D slider: only the setting the HID pad update reads each poll (and the stored stereo
+// depth, so a later config load keeps it). No config reload, no renderer, audio, input or timing
+// re-init: games see the slider move as on a real 3DS.
+#include <algorithm>
+#include "common/settings.h"
+extern "C" void az_set_3d_slider(int depth_percent) {
+    const int d = std::clamp(depth_percent, 0, 100);
+    AzIOS::Config::SetStereoOverride(true, d);
+    Settings::values.factor_3d.SetValue(static_cast<u32>(d));
+}
+
+// Recorder audio tap (patch 0013): forwards the DSP's mixed output to the app's recorder.
+#include "audio_core/audio_types.h"
+#include "audio_core/dsp_interface.h"
+extern "C" void az_set_audio_tap(void (*tap)(const int16_t*, size_t, void*), void* context) {
+    AudioCore::DspInterface::SetAudioTap(tap, context);
+}
+extern "C" int az_audio_sample_rate(void) {
+    return static_cast<int>(AudioCore::native_sample_rate);
+}

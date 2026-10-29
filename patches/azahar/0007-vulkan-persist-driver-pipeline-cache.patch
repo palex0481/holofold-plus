@@ -1,0 +1,231 @@
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+index ec4eab5..1c60aa4 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
+@@ -2,6 +2,8 @@
+ // Licensed under GPLv2 or any later version
+ // Refer to the license.txt file included.
+ 
++#include <mutex>
++
+ #include <boost/container/static_vector.hpp>
+ 
+ #include "common/alignment.h"
+@@ -15,6 +17,11 @@
+ 
+ namespace Vulkan {
+ 
++std::mutex& DriverPipelineCacheMutex() {
++    static std::mutex mutex;
++    return mutex;
++}
++
+ MICROPROFILE_DEFINE(Vulkan_Pipeline, "Vulkan", "Pipeline Building", MP_RGB(0, 192, 32));
+ 
+ vk::ShaderStageFlagBits MakeShaderStage(std::size_t index) {
+@@ -290,6 +297,9 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
+         pipeline_info.flags |= vk::PipelineCreateFlagBits::eFailOnPipelineCompileRequiredEXT;
+     }
+ 
++    // VkPipelineCache is not internally synchronized. The build workers and the periodic disk
++    // save both touch it.
++    std::scoped_lock cache_lock{DriverPipelineCacheMutex()};
+     auto result = instance.GetDevice().createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+     if (result.result == vk::Result::eSuccess) {
+         pipeline = std::move(result.value);
+diff --git a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+index 20e3e66..dc3fcc2 100644
+--- a/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
++++ b/src/video_core/renderer_vulkan/vk_graphics_pipeline.h
+@@ -4,6 +4,8 @@
+ 
+ #pragma once
+ 
++#include <mutex>
++
+ #include "common/hash.h"
+ #include "common/thread_worker.h"
+ #include "video_core/pica/regs_pipeline.h"
+@@ -45,6 +47,10 @@ private:
+ 
+ namespace Vulkan {
+ 
++/// External sync for VkPipelineCache. Build workers compile in parallel, and the disk save
++/// reads the same cache.
++std::mutex& DriverPipelineCacheMutex();
++
+ class Instance;
+ class RenderManager;
+ 
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+index 53ffcc4..c92db9c 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp
+@@ -147,7 +147,7 @@ void PipelineCache::BuildLayout() {
+ PipelineCache::~PipelineCache() {
+     pipeline_workers.WaitForRequests();
+     shader_workers.WaitForRequests();
+-    SaveDriverPipelineDiskCache();
++    SaveDriverPipelineDiskCache(true);
+ }
+ 
+ void PipelineCache::LoadCache(const std::atomic_bool& stop_loading,
+@@ -178,8 +178,11 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
+ 
+     LOG_INFO(Render_Vulkan, "Switching pipeline cache to title_id={:016X}", title_id);
+ 
+-    // Save current driver cache, update program ID and load the new driver cache
+-    SaveDriverPipelineDiskCache();
++    // A periodic save may be queued. Let it finish while this cache and program id are still
++    // current, then save again, then switch. Otherwise the worker can write the new title's
++    // cache bytes into the previous title's file.
++    pipeline_workers.WaitForRequests();
++    SaveDriverPipelineDiskCache(true);
+     SetProgramID(title_id);
+     LoadDriverPipelineDiskCache(stop_loading, nullptr);
+ 
+@@ -260,13 +263,33 @@ void PipelineCache::LoadDriverPipelineDiskCache(
+ 
+     LOG_INFO(Render_Vulkan, "Loading pipeline cache for title_id={:016X} with size {} KB",
+              program_id, cache_file_size / 1024);
++    last_saved_cache_bytes = static_cast<std::size_t>(cache_file_size);
+ 
+     cache_info.initialDataSize = cache_file_size;
+     cache_info.pInitialData = cache_data.data();
+     load_cache(true);
+ }
+ 
+-void PipelineCache::SaveDriverPipelineDiskCache() {
++void PipelineCache::ScheduleDriverCacheSave() {
++    if (!Settings::values.use_disk_shader_cache || !driver_pipeline_cache) {
++        return;
++    }
++    // ~5 s at 60 fps. The worker does the write so the emulation thread does not hitch.
++    if (++frames_since_cache_save < 300) {
++        return;
++    }
++    frames_since_cache_save = 0;
++    if (cache_save_queued.exchange(true)) {
++        return;
++    }
++    pipeline_workers.QueueWork([this] {
++        // Clear the flag even if the driver throws, or saves stop for the rest of the session.
++        SCOPE_EXIT({ cache_save_queued.store(false); });
++        SaveDriverPipelineDiskCache(false);
++    });
++}
++
++void PipelineCache::SaveDriverPipelineDiskCache(bool force) {
+     // Save Vulkan pipeline cache
+     if (!Settings::values.use_disk_shader_cache || !driver_pipeline_cache) {
+         return;
+@@ -281,18 +304,46 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
+     const auto cache_file_path =
+         fmt::format("{}{:016X}-{:X}{:X}.bin", cache_dir, program_id, vendor_id, device_id);
+ 
+-    FileUtil::IOFile cache_file{cache_file_path, "wb"};
++    std::vector<u8> cache_data;
++    {
++        std::scoped_lock lock{DriverPipelineCacheMutex()};
++        if (!driver_pipeline_cache) {
++            return;
++        }
++        cache_data = instance.GetDevice().getPipelineCacheData(*driver_pipeline_cache);
++    }
++    if (cache_data.empty()) {
++        return;
++    }
++    // Periodic saves skip an unchanged blob. Exit and title switches pass force: the byte size
++    // can stay the same while MoltenVK rewrites entries inside it.
++    if (!force && cache_data.size() == last_saved_cache_bytes) {
++        return;
++    }
++
++    const auto tmp_path = cache_file_path + ".tmp";
++    FileUtil::IOFile cache_file{tmp_path, "wb"};
+     if (!cache_file.IsOpen()) {
+         LOG_ERROR(Render_Vulkan, "Unable to open pipeline cache for writing");
+         return;
+     }
+-
+-    const vk::Device device = instance.GetDevice();
+-    const auto cache_data = device.getPipelineCacheData(*driver_pipeline_cache);
+     if (cache_file.WriteBytes(cache_data.data(), cache_data.size()) != cache_data.size()) {
+         LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
++        cache_file.Close();
++        FileUtil::Delete(tmp_path);
++        return;
++    }
++    // rename() replaces the destination on the same filesystem. Deleting first would drop the
++    // last good cache if the rename failed.
++    cache_file.Close();
++    if (!FileUtil::Rename(tmp_path, cache_file_path)) {
++        LOG_ERROR(Render_Vulkan, "Error replacing pipeline cache");
++        FileUtil::Delete(tmp_path);
+         return;
+     }
++    last_saved_cache_bytes = cache_data.size();
++    LOG_INFO(Render_Vulkan, "Wrote pipeline cache for title_id={:016X}, {} KB", program_id,
++             cache_data.size() / 1024);
+ }
+ 
+ void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
+diff --git a/src/video_core/renderer_vulkan/vk_pipeline_cache.h b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+index a943486..2049a9e 100644
+--- a/src/video_core/renderer_vulkan/vk_pipeline_cache.h
++++ b/src/video_core/renderer_vulkan/vk_pipeline_cache.h
+@@ -4,7 +4,9 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <bitset>
++#include <cstddef>
+ 
+ #include "video_core/rasterizer_interface.h"
+ #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+@@ -69,6 +71,10 @@ public:
+     /// Binds a pipeline using the provided information
+     bool BindPipeline(PipelineInfo& info, bool wait_built = false);
+ 
++    /// Every few frames, write the driver pipeline cache (MoltenVK's compiled Metal pipelines)
++    /// to disk. The destructor also saves, but visionOS can kill the process first.
++    void ScheduleDriverCacheSave();
++
+     Pica::Shader::Generator::ExtraVSConfig CalcExtraConfig(
+         const Pica::Shader::Generator::PicaVSConfig& config);
+ 
+@@ -108,8 +114,9 @@ private:
+     void LoadDriverPipelineDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},
+                                      const VideoCore::DiskResourceLoadCallback& callback = {});
+ 
+-    /// Stores the generated pipeline cache
+-    void SaveDriverPipelineDiskCache();
++    /// Stores the generated pipeline cache. `force` writes even when the blob size is unchanged
++    /// (exit, title switch).
++    void SaveDriverPipelineDiskCache(bool force);
+ 
+     /// Loads the shader disk cache
+     void LoadDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},
+@@ -161,6 +168,9 @@ private:
+     Shader trivial_vertex_shader;
+ 
+     u64 current_program_id{0};
++    u32 frames_since_cache_save = 0;
++    std::size_t last_saved_cache_bytes = 0;
++    std::atomic_bool cache_save_queued{false};
+     std::vector<std::shared_ptr<ShaderDiskCache>> disk_caches;
+     std::shared_ptr<ShaderDiskCache> curr_disk_cache{};
+ };
+diff --git a/src/video_core/renderer_vulkan/vk_rasterizer.cpp b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+index 96fe552..30ba5a2 100644
+--- a/src/video_core/renderer_vulkan/vk_rasterizer.cpp
++++ b/src/video_core/renderer_vulkan/vk_rasterizer.cpp
+@@ -142,6 +142,7 @@ RasterizerVulkan::~RasterizerVulkan() = default;
+ void RasterizerVulkan::TickFrame() {
+     scheduler.WaitWorker();
+     res_cache.TickFrame();
++    pipeline_cache.ScheduleDriverCacheSave();
+ }
+ 
+ void RasterizerVulkan::LoadDefaultDiskResources(

@@ -1,6 +1,7 @@
 import AzaharCore
 import CoreMotion
 import GameController
+import os
 import UIKit
 
 /// Physical controllers (MFi, Xbox, PlayStation, Switch Pro, Backbone/Kishi …), keyboards and
@@ -19,7 +20,14 @@ final class InputManager: ObservableObject {
 
     private init() {}
 
+    /// True between start() and stop(): a game is on screen and owns the controllers.
+    private(set) var active = false
+
+    /// 3DS buttons whose pressed state a GameController handler last delivered (any thread).
+    nonisolated static let handlerHeld = OSAllocatedUnfairLock(initialState: Set<UInt32>())
+
     func start() {
+        active = true
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] n in
             Task { @MainActor in self?.attach(n.object as? GCController) }
@@ -28,7 +36,12 @@ final class InputManager: ObservableObject {
             #if os(visionOS)
             VisionDiag.log("controller disconnected: \((n.object as? GCController)?.vendorName ?? "?")")
             #endif
-            Task { @MainActor in self?.refreshGamepadState() }
+            Task { @MainActor in
+                self?.refreshGamepadState()
+                #if os(visionOS)
+                self?.rebindTouchpads()
+                #endif
+            }
         })
         observers.append(nc.addObserver(forName: .GCKeyboardDidConnect, object: nil, queue: .main) { [weak self] n in
             Task { @MainActor in self?.attachKeyboard((n.object as? GCKeyboard) ?? GCKeyboard.coalesced) }
@@ -63,6 +76,9 @@ final class InputManager: ObservableObject {
     }
 
     func stop() {
+        active = false
+        polledHeld.removeAll()
+        polledSticks.removeAll()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
         GCController.stopWirelessControllerDiscovery()
@@ -75,6 +91,14 @@ final class InputManager: ObservableObject {
         accessories.removeAll()
         #endif
         az_release_all_input()
+        #if os(visionOS)
+        for button in touchpadButtons {
+            button.pressedChangedHandler = nil
+            button.valueChangedHandler = nil
+        }
+        touchpadButtons.removeAll()
+        touchpadDown = false
+        #endif
     }
 
     private func refreshGamepadState() {
@@ -95,6 +119,63 @@ final class InputManager: ObservableObject {
         if !hasGamepad { hasGamepad = true }
     }
 
+    /// Bind every controller again (the library's navigator hands its pads back after the game
+    /// started; whatever it restored must not stay). No-op while no game runs.
+    func reattachIfActive(_ reason: String) {
+        guard active else { return }
+        GCController.controllers().forEach(attach)
+        #if os(visionOS)
+        VisionDiag.log("input: controllers re-bound (\(reason))")
+        #endif
+    }
+
+    // MARK: Direct polling (fallback)
+
+    private var polledHeld = Set<UInt32>()
+    private var polledSticks: [ObjectIdentifier: SIMD2<Float>] = [:]
+    private var lastLostLog = Date.distantPast
+    private var lostFrames = 0
+
+    /// Called every frame from the RealityKit pump. Reads each standard gamepad's current state
+    /// directly and sends any change to the core, so input reaches the game even if the system
+    /// routes events elsewhere or a handler was replaced. Logs frames where a button is down on the
+    /// pad but no handler delivered it (the fallback did).
+    func pollGamepads() {
+        guard active else { return }
+        var held = Set<UInt32>()
+        for c in GCController.controllers() {
+            guard let pad = c.extendedGamepad, !(c.vendorName ?? "").contains("VR2 Sense") else { continue }
+            func on(_ b: GCControllerButtonInput?, _ button: AZButton) { if b?.isPressed == true { held.insert(button.rawValue) } }
+            on(pad.buttonB, AZ_BUTTON_A); on(pad.buttonA, AZ_BUTTON_B)
+            on(pad.buttonY, AZ_BUTTON_X); on(pad.buttonX, AZ_BUTTON_Y)
+            on(pad.leftShoulder, AZ_BUTTON_L); on(pad.rightShoulder, AZ_BUTTON_R)
+            on(pad.leftTrigger, AZ_BUTTON_ZL); on(pad.rightTrigger, AZ_BUTTON_ZR)
+            on(pad.buttonMenu, AZ_BUTTON_START); on(pad.buttonOptions, AZ_BUTTON_SELECT)
+            on(pad.dpad.up, AZ_BUTTON_UP); on(pad.dpad.down, AZ_BUTTON_DOWN)
+            on(pad.dpad.left, AZ_BUTTON_LEFT); on(pad.dpad.right, AZ_BUTTON_RIGHT)
+            let id = ObjectIdentifier(pad)
+            let stick = SIMD2(pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value)
+            if polledSticks[id] != stick {
+                polledSticks[id] = stick
+                az_stick(AZ_STICK_CIRCLE_PAD, stick.x, stick.y)
+            }
+        }
+        for raw in held.symmetricDifference(polledHeld) {
+            az_button(AZButton(rawValue: raw), held.contains(raw))
+        }
+        polledHeld = held
+        let missed = held.subtracting(Self.handlerHeld.withLock { $0 })
+        guard !missed.isEmpty else { return }
+        lostFrames += 1
+        #if os(visionOS)
+        if Date().timeIntervalSince(lastLostLog) > 2 {
+            lastLostLog = Date()
+            let scenes = UIApplication.shared.connectedScenes.map { "\($0.session.role.rawValue):\($0.activationState.rawValue)" }.joined(separator: ",")
+            VisionDiag.log("input LOST: buttons \(missed.sorted()) down on the pad but no handler delivered them (\(lostFrames) frames so far); poll sent them; scenes=[\(scenes)]")
+        }
+        #endif
+    }
+
     // MARK: Gamepads
 
     private func attach(_ controller: GCController?) {
@@ -112,6 +193,7 @@ final class InputManager: ObservableObject {
         func bind(_ input: GCControllerButtonInput?, _ button: AZButton) {
             input?.pressedChangedHandler = { _, _, pressed in
                 az_button(button, pressed)
+                InputManager.handlerHeld.withLock { if pressed { $0.insert(button.rawValue) } else { $0.remove(button.rawValue) } }
                 if pressed { Task { @MainActor in InputManager.shared.gamepadUsed() } }
             }
         }
@@ -139,9 +221,10 @@ final class InputManager: ObservableObject {
             // The system keeps the PS / Home button for itself (it never reached the app on the
             // device), so holding Options / Menu leaves the game; a short press is still START.
             pad.buttonMenu.pressedChangedHandler = Self.startWithExitHold()
-            pad.buttonHome?.pressedChangedHandler = { _, _, pressed in
-                if pressed { NotificationCenter.default.post(name: .bifoldExitGame, object: nil) }
-            }
+            // The touchpad click is bound only so the system does not take it as a gesture; it
+            // toggles nothing. The game window's control bar is look-and-pinch only: no controller
+            // button shows, hides or presses it.
+            bindTouchpads(on: controller)
             attachMotion(controller)
         }
         #endif
@@ -149,6 +232,73 @@ final class InputManager: ObservableObject {
     }
 
     #if os(visionOS)
+    /// Touchpad clicks the system did not deliver through pressedChangedHandler. Polled from the
+    /// RealityKit pump; the handler and the poll share one rising edge.
+    private var touchpadButtons: [GCControllerButtonInput] = []
+    private var touchpadDown = false
+    private var loggedPhysicalInputs = Set<String>()
+
+    /// Called every compositor pump. visionOS often never fires the touchpad click handler.
+    func pollTouchpads() {
+        let down = touchpadButtons.contains { $0.isPressed }
+        noteTouchpad(down: down, source: "poll")
+    }
+
+    private func noteTouchpad(down: Bool, source: String) {
+        touchpadDown = down  // no longer toggles the control ornament (L3+R3 does)
+    }
+
+    /// Drop buttons from a controller that just disconnected and bind whatever is still there.
+    private func rebindTouchpads() {
+        touchpadButtons.removeAll()
+        touchpadDown = false
+        GCController.controllers().forEach { bindTouchpads(on: $0) }
+    }
+
+    /// Bind every element that looks like a touchpad click, and stop the system taking the click
+    /// as a gesture. Names are logged once per controller so a device log shows what existed.
+    private func bindTouchpads(on controller: GCController) {
+        let key = "\(controller.vendorName ?? "?")|\(controller.productCategory)"
+        if loggedPhysicalInputs.insert(key).inserted {
+            let profile = controller.physicalInputProfile
+            VisionDiag.log("physical inputs: buttons=[\(profile.buttons.keys.sorted().joined(separator: ","))] dpads=[\(profile.dpads.keys.sorted().joined(separator: ","))]")
+        }
+        var found: [GCControllerButtonInput] = []
+        var seen = Set<ObjectIdentifier>()
+        func add(_ button: GCControllerButtonInput?) {
+            guard let button else { return }
+            guard seen.insert(ObjectIdentifier(button)).inserted else { return }
+            found.append(button)
+        }
+        if let pad = controller.extendedGamepad {
+            add((pad as? GCDualSenseGamepad)?.touchpadButton)
+            add((pad as? GCDualShockGamepad)?.touchpadButton)
+        }
+        let profile = controller.physicalInputProfile
+        for (name, button) in profile.buttons {
+            let lower = name.lowercased()
+            if lower.contains("touchpad") || lower.contains("touch pad") || name == GCInputDualShockTouchpadButton {
+                add(button)
+            }
+        }
+        for button in found {
+            button.preferredSystemGestureState = .disabled
+            button.pressedChangedHandler = { _, _, pressed in
+                Task { @MainActor in InputManager.shared.noteTouchpad(down: pressed, source: "handler") }
+            }
+            button.valueChangedHandler = { _, _, pressed in
+                Task { @MainActor in InputManager.shared.noteTouchpad(down: pressed, source: "value") }
+            }
+            if !touchpadButtons.contains(where: { $0 === button }) {
+                touchpadButtons.append(button)
+            }
+        }
+        for (name, pad) in profile.dpads where name.lowercased().contains("touch") {
+            pad.preferredSystemGestureState = .disabled
+        }
+        VisionDiag.log("controls toggle: \(found.count) touchpad input(s), class \(type(of: controller.extendedGamepad as Any)), tracked \(touchpadButtons.count), home=\(controller.extendedGamepad?.buttonHome != nil)")
+    }
+
     /// The headset gives apps no device motion, so motion controls come from the controller's own
     /// gyro and accelerometer (DualSense, DualShock 4, Switch Pro …).
     ///
@@ -205,6 +355,15 @@ final class InputManager: ObservableObject {
         pad.rightThumbstick.valueChangedHandler = Self.stickAsDpad()
         VisionDiag.log("PS VR2 Sense pair: R2→Y, R1→R, right stick→d-pad")
     }
+
+    #if os(visionOS)
+    private static func toggleControls(_ source: String) {
+        Task { @MainActor in
+            VisionDiag.log("controls toggle pressed: \(source)")
+            NotificationCenter.default.post(name: .bifoldToggleControls, object: nil)
+        }
+    }
+    #endif
 
     /// START on press; held for 1.2 s it asks the game window to exit.
     private static func startWithExitHold() -> GCControllerButtonValueChangedHandler {
@@ -412,4 +571,5 @@ final class InputManager: ObservableObject {
 extension Notification.Name {
     /// A controller's PS / Home button: the game window closes the game (visionOS).
     static let bifoldExitGame = Notification.Name("BifoldExitGame")
+    static let bifoldToggleControls = Notification.Name("BifoldToggleControls")
 }

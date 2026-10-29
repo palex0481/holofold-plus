@@ -37,6 +37,13 @@
 #include "common/settings.h"
 #include "common/string_util.h"
 #include "core/core.h"
+#include "audio_core/dsp_interface.h"
+#include "core/core_timing.h"
+#include "core/hle/service/apt/applet_manager.h"
+#include "core/hle/service/apt/apt.h"
+#include "core/hle/service/hid/hid.h"
+#include "video_core/gpu.h"
+#include "video_core/renderer_base.h"
 #include "core/frontend/framebuffer_layout.h"
 #include "core/file_sys/cia_container.h"
 #include "core/file_sys/title_metadata.h"
@@ -364,6 +371,38 @@ void az_reload_settings(void) {
     if (system.IsPoweredOn()) {
         system.ApplySettings();
         RequestSurfaceUpdate();
+    }
+}
+
+// One piece of System::ApplySettings at a time, so the hang watchdog can find which part of a
+// settings reload (what the live 3D toggle did) un-wedges a stalled game. 5 = the full reload.
+const char* az_recover_step(int step) {
+    auto& system = Core::System::GetInstance();
+    if (!system.IsPoweredOn()) return "not running";
+    switch (step) {
+    case 1:
+        system.CoreTiming().UpdateClockSpeed(Settings::values.cpu_clock_percentage.GetValue());
+        return "clock re-apply";
+    case 2:
+        system.DSP().SetSink(Settings::values.output_type.GetValue(), Settings::values.output_device.GetValue());
+        system.DSP().EnableStretching(Settings::values.enable_audio_stretching.GetValue());
+        return "audio sink recreate";
+    case 3: {
+        if (auto hid = Service::HID::GetModule(system)) hid->ReloadInputDevices();
+        if (auto apt = Service::APT::GetModule(system)) apt->GetAppletManager()->ReloadInputDevices();
+        return "HID + APT input reload";
+    }
+    case 4: {
+        auto& r = system.GPU().Renderer();
+        r.UpdateCurrentFramebufferLayout();
+        r.Settings().bg_color_update_requested = true;
+        r.Settings().shader_update_requested = true;
+        RequestSurfaceUpdate();
+        return "GPU layout + shader + surface update";
+    }
+    default:
+        az_reload_settings();
+        return "full settings reload";
     }
 }
 

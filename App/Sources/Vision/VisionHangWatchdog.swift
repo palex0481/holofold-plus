@@ -28,7 +28,11 @@ final class VisionHangWatchdog: @unchecked Sendable {
     private var profiledThisGameStall = false
     private var mainStallLogged = false
     private var seconds = 0
+    private var lastRecoveryStep = 0
     private var hitchCursor: UInt64 = 0
+    /// Cleared synchronously by stop() (under `lock`), so recovery steps already queued on the main
+    /// queue never run into a game that is exiting.
+    private var armed = false
 
     /// Called by the frame pump on the main thread.
     func pumped(frame: UInt64) {
@@ -39,6 +43,7 @@ final class VisionHangWatchdog: @unchecked Sendable {
     }
 
     func start() {
+        lock.lock(); armed = true; lock.unlock()
         queue.async { [self] in
             guard timer == nil else { return }
             emuStalledSeconds = 0
@@ -58,6 +63,7 @@ final class VisionHangWatchdog: @unchecked Sendable {
     }
 
     func stop() {
+        lock.lock(); armed = false; lock.unlock()
         queue.async { [self] in
             timer?.cancel()
             timer = nil
@@ -106,7 +112,8 @@ final class VisionHangWatchdog: @unchecked Sendable {
         if havePerf, !paused, perf.game_fps < 0.5, perf.system_fps > 30 {
             gameStalledSeconds += 1
         } else {
-            if gameStalledSeconds >= 5 { VisionDiag.log("hang: game drawing again after \(gameStalledSeconds) s") }
+            if gameStalledSeconds >= 5 { VisionDiag.log("hang: game drawing again after \(gameStalledSeconds) s (last recovery step \(lastRecoveryStep))") }
+            lastRecoveryStep = 0
             gameStalledSeconds = 0
             profiledThisGameStall = false
         }
@@ -118,8 +125,25 @@ final class VisionHangWatchdog: @unchecked Sendable {
             VisionDiag.log(String(format: "hang: game drew nothing for 5 s (system %.1f fps, speed %.0f%%, jit %d, interpreter compat %d), sampling to %@",
                                   perf.system_fps, perf.emulation_speed * 100, JITHelper.isEnabled ? 1 : 0,
                                   UserDefaults.standard.bool(forKey: "interpreterCompat") ? 1 : 0, url.lastPathComponent))
-            let samples = az_debug_profile(url.path, 3, 40)
-            VisionDiag.log("hang: \(samples) samples written")
+            // Sample off the watchdog queue so the recovery steps below keep their timing.
+            DispatchQueue.global(qos: .utility).async {
+                let samples = az_debug_profile(url.path, 3, 40)
+                VisionDiag.log("hang: \(samples) samples written")
+            }
+        }
+
+        // The live 3D toggle (a full settings reload) un-wedged these stalls on the device. Still
+        // stuck 5 s: run the reload one piece at a time, 2 s apart (full reload at 13 s); the
+        // "game drawing again" line right after a step names the part that recovers it.
+        if gameStalledSeconds >= 5, gameStalledSeconds <= 13, (gameStalledSeconds - 5) % 2 == 0 {
+            let step = Int32((gameStalledSeconds - 5) / 2 + 1), secs = gameStalledSeconds
+            DispatchQueue.main.async { [self] in
+                lock.lock(); let live = armed; lock.unlock()
+                guard live, az_is_running() else { return }
+                let name = String(cString: az_recover_step(step))
+                VisionDiag.log("hang: recovery step \(step) (\(name)) at \(secs) s")
+            }
+            lastRecoveryStep = Int(step)
         }
 
         // Display: the main thread stopped pumping frames into RealityKit.

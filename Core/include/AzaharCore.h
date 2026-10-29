@@ -33,6 +33,8 @@ bool az_init(const char* user_dir, const char* vulkan_library_path);
 
 /// Re-reads <user_dir>/config/ios-config.ini and applies it (also to a running game where possible).
 void az_reload_settings(void);
+/// Runs one part of the settings reload (1 clock, 2 audio sink, 3 HID/APT input, 4 GPU/shader/surface, 5 all); returns its name.
+const char* az_recover_step(int step);
 
 /// Version string of the bundled Azahar core, e.g. "Azahar 2126.2".
 char* az_core_version(void);
@@ -261,6 +263,14 @@ void az_offscreen_release(int slot);
 /// screens, the right half the right eye's (bottom screen identical). depth_percent is the 3D
 /// slider (1-100). Applied on the next settings load (az_run_game / az_reload_settings).
 void az_set_stereo(bool enabled, int depth_percent);
+/// Live 3D slider (0...100) while a game runs; no settings reload.
+void az_set_3d_slider(int depth_percent);
+
+/// Recorder audio: called on the emulator's audio thread with each mixed block of interleaved
+/// stereo s16 samples at az_audio_sample_rate(), before the speaker sink. NULL turns it off.
+typedef void (*az_audio_tap_fn)(const int16_t* interleaved, size_t frames, void* context);
+void az_set_audio_tap(az_audio_tap_fn tap, void* context);
+int az_audio_sample_rate(void);
 
 // ---------------------------------------------------------------------------------------------
 // Input
