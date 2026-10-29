@@ -22,10 +22,22 @@ Holofold is a fork of [Bifold](https://github.com/Bifold-Emu/Bifold) (an iOS fro
 - **Auto-save**: leaving the game saves a state, and the next launch resumes from it.
 - **Full speed on M5**: about 60 fps with the interpreter alone in our tests (no JIT needed), at up to 4× internal resolution (1600×960 per eye).
 - **Boots straight into the game**: no launcher UI.
+- **Runs in the Shared Space**: the game and bottom screen are regular windows you can place next to other apps, and the 3D works there. There's no immersive mode yet.
 
 ## Status
 
-Early and experimental. Known issues:
+Early and experimental.
+
+Tested games (Vision Pro M5, interpreter, no JIT):
+
+| Game | Status |
+|---|---|
+| Super Mario 3D Land | Plays well at about 60 fps; HD texture pack works |
+| The Legend of Zelda: Ocarina of Time 3D | Boots and starts a new game (name entry works); longer play not tested yet |
+
+Tested another game? Please open an issue with the result.
+
+Known issues:
 
 - A game can freeze after several minutes of play (the game stops drawing while the emulator keeps running). We're investigating. The **interpreter compatibility mode** (see [Configuration](#configuration)) helps narrow it down, and reports with the diagnostics described below are very welcome.
 - The Vision Pro screen recorder captures one eye only, so recordings look flat. The 3D is in the headset.
