@@ -3,7 +3,6 @@
 > - Cartridge-insert launcher: the card flies off the shelf into a 3D handheld that turns, opens and zooms into the game's screens (A or a tap skips); load-on-tap boot with a cross-fade to the first frame.
 > - Screen tilt slider in the in-game Controls panel (−30° to +30°, live) that pitches the 3D top screen for a stronger depth effect.
 > - In-game Controls panel beside the screens: live 3D depth slider, live Top and Bottom screen size sliders, Flat/Curved toggle.
-> - Demo recorder: records the emulator output as side-by-side 3D H.264 MP4 with game audio (YouTube 3D tagged), optional touch screen, saved to Photos or shared.
 > - Textures menu on the shelf: custom texture packs (on by default), preload, and Linear texture sampling; xBRZ texture filtering removed (it turned custom-pack textures black on Vulkan).
 > - Always stereoscopic 3D in a window (2D and immersive modes removed); 5× internal resolution by default; smaller bottom screen.
 > - Performance and stability patches for Azahar on Apple GPUs (patches 0004–0011): asynchronous MoltenVK pipelines and queue submits, persistent driver pipeline cache, interpreter page-pointer cache, GSP missed-interrupt signalling and stalled-queue re-signal, switchable renderer workarounds.

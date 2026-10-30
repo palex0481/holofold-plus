@@ -42,7 +42,7 @@ final class VisionControlsModel: ObservableObject {
 @MainActor enum VisionLaunchGeometry {
     static var shelfSize: CGSize?
     /// Gap between the game window's leading edge and the controls panel / Controls button.
-    static let controlsGap: CGFloat = 8
+    static let controlsGap: CGFloat = 0
 
     /// The game window's width for a given height: exactly the screens' width at the default
     /// sizes (layoutScreens' unit), so the window has no empty margin left and right and the
@@ -51,7 +51,8 @@ final class VisionControlsModel: ObservableObject {
     /// Where the controls panel attaches: the top-left corner of the visible screens (not the
     /// window edge), as a UnitPoint of the window. Same math as layoutScreens (window points;
     /// only ratios matter): layout height is 94% of the window, screens centred on the window.
-    static func screensTopLeading(window size: CGSize, curved: Bool, topSize: Double, bottomSize: Double) -> UnitPoint {
+    static func screensTopLeading(window size: CGSize, curved: Bool, topSize: Double, bottomSize: Double,
+                                  topTilt: Double = 0) -> UnitPoint {
         let W = Double(size.width), H = Double(size.height)
         guard W > 0, H > 0 else { return .leading }
         let h = H * 0.94
@@ -63,14 +64,42 @@ final class VisionControlsModel: ObservableObject {
         let tw = ts, bw = bScale * bs
         let total = tw * 0.6 + 0.03 + bw * 0.75 * cos(tilt)
         unit *= min(1, W / (unit * max(tw, bw)), h / (unit * total))
-        let visibleTop = tw * unit * (curved ? 0.88 : 1)          // layoutTop's curved margin
-        let widest = max(visibleTop, bw * unit)
-        let left = (W - widest) / 2
-        let topEdge = (H - unit * total) / 2 + (curved ? tw * unit * 0.6 * 0.06 : 0)
-        _ = left   // the screens' left edge; the panel now clears the whole window instead (below)
-        // x = 0: the window's own leading edge, so the panel (20 pt trailing gap) clears the
-        // window's glass entirely; y = the top screen's top edge, so it lines up with the game.
-        return UnitPoint(x: 0, y: max(0, topEdge / H))
+        // The top screen exactly as layoutScreens/layoutTop place it: width fill * tw (curved
+        // margin), centred; its centre line at span/2 - 0.3 tw above the window centre; the tilt
+        // (about that line) shortens its projected half-height by cos(pitch).
+        let fill = curved ? 0.88 : 1
+        let topW = tw * unit * fill
+        let r = VisionStereo.screenTiltRange
+        let pitch = min(max(topTilt, Double(r.lowerBound)), Double(r.upperBound)) * .pi / 180
+        let span = unit * total
+        let centreY = span / 2 - tw * unit * 0.3                   // up from the window centre
+        let halfH = topW * 0.3 * cos(pitch)
+        let left = (W - topW) / 2
+        let topEdge = H / 2 - (centreY + halfH)                   // down from the window top
+        // The top screen's own top-left corner, so the panel's trailing edge touches the screen.
+        return UnitPoint(x: min(max(left / W, 0), 1), y: min(max(topEdge / H, 0), 1))
+    }
+
+    /// How far (points) the control bar is pulled toward the player so it is always in front of
+    /// the top screen: the original 140 pt, plus the tilted screen's nearest edge. layoutScreens
+    /// pushes the screen's centre forward by 0.3 tw |sin p| and the tilt brings an edge a further
+    /// 0.3 tw |sin p| forward (tw = the top width in window points here), plus a margin.
+    static func controlsDepth(window size: CGSize, curved: Bool, topSize: Double, bottomSize: Double,
+                              topTilt: Double) -> CGFloat {
+        let W = Double(size.width), H = Double(size.height)
+        guard W > 0, H > 0 else { return 140 }
+        let h = H * 0.94
+        let tilt = Double(VisionStereo.touchTiltDegrees) * .pi / 180
+        let bScale = Double(VisionGameSession.bottomScale)
+        var unit = min(W, h / (0.6 + 0.03 + bScale * 0.75 * cos(tilt)))
+        let ts = min(max(topSize, 0.5), 1.5), bs = min(max(bottomSize, 0.5), 1.5)
+        let tw = ts, bw = bScale * bs
+        let total = tw * 0.6 + 0.03 + bw * 0.75 * cos(tilt)
+        unit *= min(1, W / (unit * max(tw, bw)), h / (unit * total))
+        let r = VisionStereo.screenTiltRange
+        let pitch = min(max(topTilt, Double(r.lowerBound)), Double(r.upperBound)) * .pi / 180
+        let edge = 0.6 * tw * unit * abs(sin(pitch))
+        return CGFloat(140 + edge + (pitch == 0 ? 0 : 40))
     }
 
     static func screensWidth(for size: CGSize) -> CGFloat {
@@ -499,34 +528,20 @@ struct VisionGameWindow: View {
                 }
             }
         }
-        // The controls panel, attached to this window as an ornament: its top-right corner sits
-        // 20 pt left of the visible screens' top-left corner (computed from the layout, not the
-        // window edge), so it moves with the window and can't drift or end up behind the game.
-        .ornament(visibility: ctl.controlsOpen && started ? .visible : .hidden,
-                  attachmentAnchor: .scene(VisionLaunchGeometry.screensTopLeading(
-                      window: windowSize, curved: curved, topSize: topSize, bottomSize: bottomSize)),
-                  contentAlignment: .topTrailing) {
+        // The control bar, as originally: one glass row centred on the top screen's top edge
+        // (same geometry as layoutScreens: curve margin, sizes, tilt, window size), always shown,
+        // pulled toward the player so the curved screen's corners never hide it.
+        .ornament(visibility: started ? .visible : .hidden,
+                  attachmentAnchor: .scene(UnitPoint(x: 0.5, y: VisionLaunchGeometry.screensTopLeading(
+                      window: windowSize, curved: curved, topSize: topSize, bottomSize: bottomSize,
+                      topTilt: screenTilt).y)),
+                  contentAlignment: .bottom) {
             VisionControlsWindow()
-                .padding(.trailing, VisionLaunchGeometry.controlsGap)
-        }
-        // If the player closed the panel, a small button left of the screens brings it back.
-        .ornament(visibility: ctl.controlsOpen || !started ? .hidden : .visible,
-                  attachmentAnchor: .scene(VisionLaunchGeometry.screensTopLeading(
-                      window: windowSize, curved: curved, topSize: topSize, bottomSize: bottomSize)),
-                  contentAlignment: .topTrailing) {
-            Button {
-                ctl.controlsOpen = true
-            } label: {
-                Label("Controls", systemImage: "slider.vertical.3")
-                    .font(.body.weight(.semibold)).lineLimit(1)
-                    .frame(minWidth: 120, minHeight: 44)
-            }
-            .buttonStyle(.bordered)
-            .fixedSize()
-            .padding(8)
-            .glassBackgroundEffect()
-            .padding(.trailing, VisionLaunchGeometry.controlsGap)
-            .focusable(false).focusEffectDisabled()
+                .padding(.bottom, 32)   // a little gap above the top screen's top edge
+                // Real 3D depth, not z-order: in front of the tilted top screen's nearest edge too.
+                .offset(z: VisionLaunchGeometry.controlsDepth(window: windowSize, curved: curved,
+                                                             topSize: topSize, bottomSize: bottomSize,
+                                                             topTilt: screenTilt))
         }
         // The controller belongs to the game: visionOS then sends no gamepad events to this
         // window's UI (no focus, no Cross presses on the bar), and GameController gets them all.
@@ -876,97 +891,91 @@ struct VisionControlsWindow: View {
     @ObservedObject private var ctl = VisionControlsModel.shared
     @Environment(\.dismissWindow) private var dismissWindow
 
+    /// Which size/tilt slider is popped open inline in the bar (one at a time).
+    @State private var adjusting: String?
+
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text("Controls").font(.headline)
-                Spacer()
-                Button { ctl.controlsOpen = false } label: {
-                    Image(systemName: "xmark").font(.body.weight(.semibold))
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Close controls")
-                .focusable(false).focusEffectDisabled()
-            }
-            VStack(spacing: 14) {
-                // Like the 3DS's slider: 2D at the left (minimum), full 3D at the right. Live, without a
-                // settings reload: the game reads it from HID, and at 0 both eyes show the left image.
-                sliderRow("3D Depth", value: $slider3D, in: 0...100,
-                               valueText: slider3D < 1 ? "2D" : "\(Int(slider3D.rounded()))%")
-                    .onChange(of: slider3D) { _, v in
-                        az_set_3d_slider(Int32(v.rounded()))
-                        VisionGameSession.current?.source.mono = v < 1
-                    }
-                // Live screen sizes (layout only, no settings reload): top and touch screen.
-                sizeSlider("Top", value: $topSize)
-                sizeSlider("Bottom", value: $bottomSize)
-                // Live top-screen tilt (layout only): the game window's RealityView update re-runs
-                // layoutScreens, which just sets the top entity's orientation/position; the mesh is
-                // kept (layoutTop's shape guard), and the core, renderer and session are untouched.
-                VStack(spacing: 6) {
-                    HStack {
-                        Text("Tilt").font(.body.weight(.semibold))
-                        Spacer()
-                        Text("\(Int(screenTilt.rounded()))°").monospacedDigit().foregroundStyle(.secondary)
-                        Button("Reset") { screenTilt = 0 }
-                            .buttonStyle(.borderless).font(.footnote.weight(.semibold))
-                            .disabled(screenTilt == 0)
-                            .focusable(false).focusEffectDisabled()
-                    }
-                    .frame(width: 260)
-                    Slider(value: $screenTilt, in: VisionStereo.screenTiltRange, step: 1)
-                        .tint(Color(white: 0.30))
-                        .frame(width: 260)
-                        .focusable(false).focusEffectDisabled()
-                        .accessibilityValue("\(Int(screenTilt.rounded())) degrees")
-                }
-                .frame(width: 260)
-            }
-            Divider()
+        HStack(spacing: 14) {
             Button {
                 ctl.pausedByPhase = false
                 core.setPaused(core.state != .paused)
             } label: {
                 Label(core.state == .paused ? "Resume" : "Pause",
                       systemImage: core.state == .paused ? "play.fill" : "pause.fill")
-                    .barButtonLabel()
             }
-            .buttonStyle(.bordered)
-            .fixedSize()
             .focusable(false).focusEffectDisabled()  // a controller Cross must never press it
-            // Live Curved / Flat: the layout swaps the top screen's mesh (layoutTop), no reload.
-            Picker("Screen", selection: $curved) {
-                Text("Curved").tag(true)
-                Text("Flat").tag(false)
+            // Like the 3DS's slider: 2D at the left, full 3D at the right. Live, no settings reload.
+            HStack(spacing: 8) {
+                Image(systemName: "view.3d")
+                Slider(value: $slider3D, in: 0...100)
+                    .frame(width: 150)
+                    .focusable(false).focusEffectDisabled()
+                Text(slider3D < 1 ? "2D" : "\(Int(slider3D.rounded()))%")
+                    .monospacedDigit().frame(width: 48, alignment: .trailing)
             }
-            .pickerStyle(.segmented)
-            .frame(width: 240, height: 44)
-            .fixedSize()
+            .onChange(of: slider3D) { _, v in
+                az_set_3d_slider(Int32(v.rounded()))
+                VisionGameSession.current?.source.mono = v < 1
+            }
+            .help("3D Depth")
+            // Top / Bottom size and Tilt: small buttons, each pops its slider inline (layout only).
+            ForEach(["Top", "Bottom", "Tilt"], id: \.self) { name in
+                Button(name) { adjusting = adjusting == name ? nil : name }
+                    .buttonStyle(.bordered)
+                    .tint(adjusting == name ? .accentColor : nil)
+                    .focusable(false).focusEffectDisabled()
+            }
+            if let name = adjusting {
+                HStack(spacing: 8) {
+                    switch name {
+                    case "Top":
+                        Slider(value: $topSize, in: 0.5...1.5).frame(width: 150)
+                        Text("\(Int((topSize * 100).rounded()))%").monospacedDigit().frame(width: 52)
+                    case "Bottom":
+                        Slider(value: $bottomSize, in: 0.5...1.5).frame(width: 150)
+                        Text("\(Int((bottomSize * 100).rounded()))%").monospacedDigit().frame(width: 52)
+                    default:
+                        Slider(value: $screenTilt, in: VisionStereo.screenTiltRange, step: 1).frame(width: 150)
+                        Text("\(Int(screenTilt.rounded()))°").monospacedDigit().frame(width: 44)
+                    }
+                    Button {
+                        switch name {
+                        case "Top": topSize = 1
+                        case "Bottom": bottomSize = 1
+                        default: screenTilt = 0
+                        }
+                    } label: { Image(systemName: "arrow.counterclockwise") }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Reset \(name)")
+                    .focusable(false).focusEffectDisabled()
+                }
+                .focusable(false).focusEffectDisabled()
+                .transition(.opacity)
+            }
+            // Live Curved / Flat: the layout swaps the top screen's mesh, no reload.
+            Toggle(isOn: $curved) {
+                Label("Curved", systemImage: "rectangle.portrait.on.rectangle.portrait.angled")
+            }
+            .toggleStyle(.button)
             .focusable(false).focusEffectDisabled()
-            recordControl
             Text(String(format: "%.0f fps · %.0f%%", core.perf.game_fps, core.perf.emulation_speed * 100))
-                .font(.body.monospacedDigit().weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .fixedSize()
-            Divider()
-            Button {
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
+            Button(role: .destructive) {
                 NotificationCenter.default.post(name: .bifoldExitGame, object: nil)   // the game window's requestExit()
             } label: {
-                Label("Exit to Library", systemImage: "square.grid.2x2")
-                    .barButtonLabel()
+                Label("Exit", systemImage: "xmark")
             }
-            .buttonStyle(.bordered)
-            .fixedSize()
-            .focusable(false).focusEffectDisabled()  // a controller Cross must never press it
+            .focusable(false).focusEffectDisabled()
             .disabled(ctl.exiting)
         }
-        .font(.body.weight(.semibold))
-        .foregroundStyle(.primary)
-        .padding(20)
-        .frame(width: 300)
-        .fixedSize(horizontal: false, vertical: true)
-        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
+        .glassBackgroundEffect()
+        .animation(.spring(response: 0.3, dampingFraction: 0.86), value: adjusting)
         // The controller stays with the game: no focus or Cross presses on these controls.
         .handlesGameControllerEvents(matching: .gamepad)
     }
