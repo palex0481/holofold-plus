@@ -756,6 +756,12 @@ final class CoverArtStore: ObservableObject {
         return d
     }()
 
+    private static let hqDirectory: URL = {
+        let d = directory.appendingPathComponent("HQ", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
     func cover(for game: Game) -> UIImage? {
         if let image = images[game.id] { return image }
         if !requested.contains(game.id) {
@@ -773,8 +779,11 @@ final class CoverArtStore: ObservableObject {
         guard let code = productCode(of: rom) else { return nil }
         let gameID = String(code.suffix(4))
         guard gameID.count == 4, gameID.allSatisfy({ $0.isLetter || $0.isNumber }) else { return nil }
-        let file = directory.appendingPathComponent("\(gameID).jpg")
-        if let data = try? Data(contentsOf: file), let image = UIImage(data: data) { return image }
+        // High-res covers (coverHQ, 768×680) live in Covers/HQ so older coverM caches in Covers/
+        // are refreshed once; the old file is still used as an offline fallback.
+        let hqFile = hqDirectory.appendingPathComponent("\(gameID).jpg")
+        let legacyFile = directory.appendingPathComponent("\(gameID).jpg")
+        if let data = try? Data(contentsOf: hqFile), let image = UIImage(data: data) { return image }
         let regions: [String]
         switch gameID.last {
         case "P", "D", "F", "S", "I", "X", "Y", "Z", "V": regions = ["EN", "US", "JA"]
@@ -782,15 +791,21 @@ final class CoverArtStore: ObservableObject {
         case "K": regions = ["KO", "US", "EN"]
         default: regions = ["US", "EN", "JA"]
         }
-        for region in regions {
-            guard let url = URL(string: "https://art.gametdb.com/3ds/coverM/\(region)/\(gameID).jpg") else { continue }
-            var request = URLRequest(url: url)
-            request.setValue("Holofold", forHTTPHeaderField: "User-Agent")
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  (response as? HTTPURLResponse)?.statusCode == 200,
-                  let image = UIImage(data: data) else { continue }
-            try? data.write(to: file, options: .atomic)
-            VisionDiag.log("cover: \(code) from \(region)")
+        for (kind, file) in [("coverHQ", hqFile), ("coverM", legacyFile)] {
+            for region in regions {
+                guard let url = URL(string: "https://art.gametdb.com/3ds/\(kind)/\(region)/\(gameID).jpg") else { continue }
+                var request = URLRequest(url: url)
+                request.setValue("Holofold", forHTTPHeaderField: "User-Agent")
+                guard let (data, response) = try? await URLSession.shared.data(for: request),
+                      (response as? HTTPURLResponse)?.statusCode == 200,
+                      let image = UIImage(data: data) else { continue }
+                try? data.write(to: file, options: .atomic)
+                VisionDiag.log("cover: \(code) \(kind) from \(region)")
+                return image
+            }
+        }
+        if let data = try? Data(contentsOf: legacyFile), let image = UIImage(data: data) {
+            VisionDiag.log("cover: \(code) using cached coverM")
             return image
         }
         VisionDiag.log("cover: none for \(code)")
