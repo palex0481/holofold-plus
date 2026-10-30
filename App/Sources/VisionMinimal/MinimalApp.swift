@@ -82,6 +82,7 @@ private struct BootView: View {
     @State private var insertPhase = 0
     @State private var insertToken: UUID?
     @State private var coverFrames: [Game.ID: CGRect] = [:]
+    @State private var showImporter = false
 
     /// Carts per row: reflows with the window width (fixed-size carts, more fit as it grows).
     @State private var columns = 4
@@ -104,10 +105,13 @@ private struct BootView: View {
                 }
                 .padding(28)
             } else if games.isEmpty {
-                Text("No games yet. Copy a decrypted .3ds, .cci, .cxi, .cia or .3dsx you dumped yourself into Files › Holofold, then reopen the app.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .padding(40)
+                VStack(spacing: 20) {
+                    Text("No games yet. Import a decrypted .3ds, .cci, .cxi, .cia or .3dsx you dumped yourself, or copy it into Files › Holofold.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                    importButton
+                }
+                .padding(40)
             } else {
                 shelves
             }
@@ -116,6 +120,11 @@ private struct BootView: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { VisionLaunchGeometry.shelfSize = $0 }
         // Tapping a cartridge clears the whole shelf (glass included) so the console flies alone.
         .glassBackgroundEffect(displayMode: inserting != nil ? .never : .always)
+        // Copies the picked files into Documents/Games (security-scoped), like LibraryView.
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: GameLibrary.importTypes,
+                      allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { library.importFiles(urls) }
+        }
         .onDisappear { inserting = nil; insertPhase = 0; insertToken = nil }
         .task { await boot() }
         .onAppear { nav.attach(count: { games.count }, columns: columns) { insert(games[$0]) } }
@@ -131,6 +140,7 @@ private struct BootView: View {
 
     private var modePicker: some View {
         HStack(spacing: 16) {
+            importButton
             texturesButton
             Picker("Screen", selection: $curved) {
                 Text("Flat").tag(false)
@@ -141,6 +151,19 @@ private struct BootView: View {
         }
         .focusable(false).focusEffectDisabled()  // the controller moves the cartridge selection only
         .disabled(inserting != nil)
+    }
+
+    /// Opens the file picker; the picked games are copied into the library.
+    private var importButton: some View {
+        Button { showImporter = true } label: {
+            Label("Import Games", systemImage: "square.and.arrow.down")
+                .padding(.horizontal, 6)
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .hoverEffect(.highlight)
+        .disabled(inserting != nil || library.installingName != nil)
     }
 
     @AppStorage("customTextures") private var customTextures = true
