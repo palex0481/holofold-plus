@@ -16,8 +16,8 @@ HOLOFOLD_AUTOBOOT_TITLE_ID =
 // Unused: every launch is a cold boot and leaving a game writes no save state.
 HOLOFOLD_AUTO_RESUME = NO
 
-// App icon asset name; empty = no icon (the system shows a blank one).
-HOLOFOLD_APPICON =
+// App icon asset name (layered visionOS image stack in Assets.xcassets); set empty in Local.xcconfig to build without an icon.
+HOLOFOLD_APPICON = VisionIcon
 // Extra Swift compilation conditions.
 HOLOFOLD_SWIFT_CONDITIONS =
 
